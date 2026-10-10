@@ -1,0 +1,30 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+    environment:
+      FACE_SEARCH_DB: /data/index.sqlite3
+      PHOTO_ROOT: /photos
+      STORAGE_BACKEND: local
+      CORS_ORIGINS: http://127.0.0.1:8511,http://localhost:8511
+    volumes:
+      - ${FACE_SEARCH_DIR:-${USERPROFILE}/.face_search}:/data
+      - ${PHOTO_ROOT:-${USERPROFILE}/Pictures}:/photos
+      - ${INSIGHTFACE_DIR:-${USERPROFILE}/.insightface}:/root/.insightface:ro
+    expose:
+      - "8000"
+    ports:
+      # Loopback-only. Changing to 0.0.0.0 would expose unauthenticated photo access.
+      - "127.0.0.1:8000:8000"
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/frontend/Dockerfile
+    ports:
+      # Loopback-only. One URL for the whole local UI.
+      - "127.0.0.1:8511:80"
+    depends_on:
+      api:
+        condition: service_healthy
