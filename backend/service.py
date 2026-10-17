@@ -190,24 +190,34 @@ def index_s3(
     store: Any,
     database: Path,
     backend_name: str = "insightface",
-    max_dimension: int = 1600,
+    max_dimension: int = 800,
     progress_callback: Any = None,
 ) -> Any:
+    import gc
+    import logging
     from io import BytesIO
     from face_search.backends import create_backend
     from face_search.backends.base import BoundingBox
     from face_search.index import IndexReport, ProcessedImage, IndexedFace, _schema, _store_result
     from face_search.utils import normalize_embedding
 
+    logger = logging.getLogger("face_search.s3_index")
+    logger.info("Starting S3 indexing with backend=%s max_dim=%d", backend_name, max_dimension)
+
     database = database.expanduser().resolve()
     database.parent.mkdir(parents=True, exist_ok=True)
 
+    # List all S3 keys
     items = store.list_all_keys()
+    logger.info("Found %d images in S3", len(items))
     report = IndexReport(scanned=len(items))
     if progress_callback is not None:
         progress_callback("checking", 0, len(items))
 
+    # Create backend (loads ONNX models into memory)
+    logger.info("Loading %s backend...", backend_name)
     backend = create_backend(backend_name)
+    logger.info("Backend loaded successfully")
     source_root = f"s3://{store.bucket}/{store.prefix}"
 
     with sqlite3.connect(database) as connection:
@@ -218,6 +228,7 @@ def index_s3(
         if previous_backend and previous_backend[0] != backend_name:
             connection.execute("DELETE FROM files")
             report.backend_changed = True
+            logger.info("Backend changed from %s, clearing index", previous_backend[0])
 
         connection.execute(
             "INSERT OR REPLACE INTO metadata(key, value) VALUES ('backend', ?)",
@@ -237,6 +248,7 @@ def index_s3(
         if deleted:
             connection.executemany("DELETE FROM files WHERE path = ?", [(p,) for p in deleted])
             report.removed = len(deleted)
+            logger.info("Removed %d deleted files from index", len(deleted))
 
         tasks = []
         for checked, item in enumerate(items, start=1):
@@ -249,30 +261,50 @@ def index_s3(
             if progress_callback is not None:
                 progress_callback("checking", checked, len(items))
 
+        logger.info("Need to index %d new/changed images (skipped %d)", len(tasks), report.skipped)
         if progress_callback is not None:
             progress_callback("indexing", 0, len(tasks))
 
         for completed, item in enumerate(tasks, start=1):
             key = item["key"]
             processed = ProcessedImage(key, item["mtime_ns"], item["size"], item["etag"])
-            try:
-                data = store.read_image(key)
-                with Image.open(BytesIO(data)) as source:
-                    source = ImageOps.exif_transpose(source).convert("RGB")
-                    original_size = source.size
-                    if max(original_size) > max_dimension:
-                        scale = max_dimension / max(original_size)
-                        new_size = (max(1, round(original_size[0] * scale)), max(1, round(original_size[1] * scale)))
-                        resized = source.resize(new_size, Image.Resampling.BILINEAR)
-                        image = np.asarray(resized)
-                        scale_x = image.shape[1] / original_size[0]
-                        scale_y = image.shape[0] / original_size[1]
-                    else:
-                        image = np.asarray(source)
-                        scale_x = 1.0
-                        scale_y = 1.0
+            # Skip images larger than 15MB to prevent OOM on constrained environments
+            max_file_size = 15 * 1024 * 1024  # 15 MB
+            if item["size"] > max_file_size:
+                processed.error = f"Skipped: file too large ({item['size'] // (1024*1024)}MB > {max_file_size // (1024*1024)}MB limit)"
+                logger.warning("  Skipping %s: too large (%d bytes)", key, item["size"])
+            else:
+                try:
+                    logger.info("[%d/%d] Downloading %s (%d bytes)", completed, len(tasks), key, item["size"])
+                    data = store.read_image(key)
 
-                    for face_index, detection in enumerate(backend.detect(image)):
+                    # Open image with aggressive memory reduction
+                    img_buffer = BytesIO(data)
+                    del data  # Free raw bytes immediately
+                    gc.collect()
+
+                    with Image.open(img_buffer) as source:
+                        original_size = source.size
+                        # Use JPEG draft mode to load at reduced resolution
+                        if getattr(source, "format", None) == "JPEG":
+                            source.draft("RGB", (max_dimension, max_dimension))
+                        image_rgb = ImageOps.exif_transpose(source).convert("RGB")
+
+                    del img_buffer  # Free the BytesIO buffer
+
+                    # Resize if still too large
+                    if max(image_rgb.size) > max_dimension:
+                        image_rgb.thumbnail((max_dimension, max_dimension), Image.Resampling.BILINEAR)
+
+                    image = np.asarray(image_rgb)
+                    scale_x = image.shape[1] / original_size[0]
+                    scale_y = image.shape[0] / original_size[1]
+                    del image_rgb  # Free PIL image
+
+                    detections = backend.detect(image)
+                    logger.info("  Found %d faces in %s", len(detections), key)
+
+                    for face_index, detection in enumerate(detections):
                         raw_box = detection.bbox
                         x1 = min(original_size[0], max(0, round(raw_box.x1 / scale_x)))
                         y1 = min(original_size[1], max(0, round(raw_box.y1 / scale_y)))
@@ -282,14 +314,28 @@ def index_s3(
                         processed.faces.append(
                             IndexedFace(face_index, BoundingBox(x1, y1, x2, y2), embedding)
                         )
-            except Exception as exc:
-                processed.error = f"{type(exc).__name__}: {exc}"
+
+                    del image, detections
+                except Exception as exc:
+                    processed.error = f"{type(exc).__name__}: {exc}"
+                    logger.error("  FAILED %s: %s", key, processed.error)
+
+            # Force garbage collection after every image to keep memory low
+            gc.collect()
 
             _store_result(connection, processed, report)
+
+            # Commit every 5 images so progress is persisted even if we crash
+            if completed % 5 == 0:
+                connection.commit()
+                logger.info("  Checkpoint commit at %d/%d", completed, len(tasks))
+
             if progress_callback is not None:
                 progress_callback("indexing", completed, len(tasks))
 
         connection.commit()
+        logger.info("Indexing complete: indexed=%d, skipped=%d, failed=%d, faces=%d",
+                    report.indexed, report.skipped, report.failed, report.face_count)
     return report
 
 

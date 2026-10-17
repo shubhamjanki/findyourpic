@@ -45,6 +45,10 @@ from face_search.search import (
 )
 from face_search.utils import SUPPORTED_EXTENSIONS
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
 LOGGER = logging.getLogger("face_search.api")
 MAX_REQUEST_BYTES = 64 * 1024 * 1024
 
@@ -117,6 +121,15 @@ def create_app(
     @app.exception_handler(StorageError)
     async def storage_handler(_request: Request, exc: StorageError) -> JSONResponse:
         return _error_response(400, str(exc))
+
+    @app.get("/")
+    @app.head("/")
+    def root() -> dict[str, str]:
+        return {
+            "name": "Find Your Pic API",
+            "status": "ok",
+            "frontend": "https://findyourpic.vercel.app",
+        }
 
     @app.get("/api/health")
     def health() -> dict[str, str]:
@@ -327,7 +340,7 @@ def create_app(
                     report=service.report_payload(report),
                     stats=index_stats(cfg.database),
                 )
-            except Exception as exc:
+            except BaseException as exc:
                 LOGGER.exception("Indexing job %s failed.", job_id)
                 update_job(status="failed", error=str(exc))
             finally:

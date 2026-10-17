@@ -31,21 +31,28 @@ class InsightFaceBackend(FaceBackend):
             target_root = Path.home() / ".insightface"
             model_dir = target_root / "models" / model_name
             model_dir.mkdir(parents=True, exist_ok=True)
-            import io
             import urllib.request
             import zipfile
             url = f"https://github.com/deepinsight/insightface/releases/download/v0.7/{model_name}.zip"
+            zip_path = model_dir.parent / f"{model_name}.zip"
             try:
-                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req, timeout=180) as resp:
-                    with zipfile.ZipFile(io.BytesIO(resp.read())) as archive:
-                        archive.extractall(model_dir)
+                urllib.request.urlretrieve(url, zip_path)
+                with zipfile.ZipFile(zip_path) as archive:
+                    archive.extractall(model_dir)
+                zip_path.unlink(missing_ok=True)
             except Exception as exc:
                 raise RuntimeError(
                     f"InsightFace model '{model_name}' could not be downloaded to {model_dir}: {exc}"
                 ) from exc
 
         root_dir = model_dir.parent.parent
+
+        import os
+        os.environ.setdefault("OMP_NUM_THREADS", "1")
+        os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+        os.environ.setdefault("MKL_NUM_THREADS", "1")
+        os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
+        os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
         try:
             from insightface.app import FaceAnalysis
@@ -67,9 +74,12 @@ class InsightFaceBackend(FaceBackend):
         self._app = FaceAnalysis(
             name=model_name,
             root=str(root_dir),
+            allowed_modules=["detection", "recognition"],
             providers=providers,
         )
-        self._app.prepare(ctx_id=ctx_id, det_size=(640, 640))
+        # Use 320x320 detection to reduce memory on constrained environments (Render 512MB)
+        det = int(os.environ.get("INSIGHTFACE_DET_SIZE", "320"))
+        self._app.prepare(ctx_id=ctx_id, det_size=(det, det))
 
     def detect(self, image: np.ndarray) -> list[FaceDetection]:
         detected_faces = self._app.get(np.ascontiguousarray(image[:, :, ::-1]))
