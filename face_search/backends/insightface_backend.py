@@ -10,7 +10,10 @@ from face_search.backends.base import BoundingBox, FaceBackend, FaceDetection
 
 
 class InsightFaceBackend(FaceBackend):
-    def __init__(self, model_name: str = "buffalo_l") -> None:
+    def __init__(self, model_name: str | None = None) -> None:
+        import os
+        if model_name is None:
+            model_name = os.environ.get("INSIGHTFACE_MODEL", "buffalo_s")
         candidate_roots = [
             Path.home() / ".insightface",
             Path("/root/.insightface"),

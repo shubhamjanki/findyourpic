@@ -10,20 +10,20 @@ COPY requirements.txt pyproject.toml* ./
 COPY face_search ./face_search
 COPY . ./
 
-# Install ONNX Runtime with its CUDA and cuDNN runtime dependencies.
+# Install CPU-optimized ONNX Runtime (low memory footprint for cloud deployment)
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir numpy Pillow tqdm insightface fastapi "uvicorn[standard]" httpx boto3 \
-    && pip uninstall --yes onnxruntime \
-    && pip install --no-cache-dir "onnxruntime-gpu[cuda,cudnn]"
+    && pip install --no-cache-dir numpy Pillow tqdm insightface fastapi "uvicorn[standard]" httpx boto3 onnxruntime
 
-RUN mkdir -p /root/.insightface/models/buffalo_l \
-    && python -c "import urllib.request, zipfile, io; res = urllib.request.urlopen('https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip'); zipfile.ZipFile(io.BytesIO(res.read())).extractall('/root/.insightface/models/buffalo_l')" || true
+# Pre-download lightweight buffalo_s model (15 MB vs 300 MB, uses ~80 MB RAM instead of >1GB)
+RUN mkdir -p /root/.insightface/models/buffalo_s /data/.insightface/models/buffalo_s \
+    && python -c "import urllib.request, zipfile, io; res = urllib.request.urlopen('https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_s.zip'); z = zipfile.ZipFile(io.BytesIO(res.read())); z.extractall('/root/.insightface/models/buffalo_s'); z.extractall('/data/.insightface/models/buffalo_s')" || true
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app \
     FACE_SEARCH_DB=/data/index.sqlite3 \
     STORAGE_BACKEND=s3 \
-    S3_BROWSE_ENABLED=true
+    S3_BROWSE_ENABLED=true \
+    INSIGHTFACE_MODEL=buffalo_s
 
 EXPOSE 8000
 
