@@ -56,6 +56,42 @@ def _cache_face(key: tuple, data: bytes) -> bytes:
 
 
 # ---------------------------------------------------------------------------
+# Photo thumbnail cache
+# ---------------------------------------------------------------------------
+_thumb_cache_lock = threading.Lock()
+_thumb_cache: OrderedDict[str, bytes] = OrderedDict()
+_THUMB_CACHE_MAX = 256
+
+
+def thumbnail_from_bytes(key: str, image_bytes: bytes, max_dim: int = 500) -> bytes:
+    with _thumb_cache_lock:
+        cached = _thumb_cache.get(key)
+        if cached is not None:
+            _thumb_cache.move_to_end(key)
+            return cached
+
+    from io import BytesIO
+    from PIL import Image, ImageOps
+
+    with Image.open(BytesIO(image_bytes)) as source:
+        if getattr(source, "format", None) == "JPEG":
+            source.draft("RGB", (max_dim, max_dim))
+        image = ImageOps.exif_transpose(source).convert("RGB")
+        if max(image.size) > max_dim:
+            image.thumbnail((max_dim, max_dim), Image.Resampling.BILINEAR)
+        output = BytesIO()
+        image.save(output, format="JPEG", quality=82, optimize=True)
+        data = output.getvalue()
+
+    with _thumb_cache_lock:
+        _thumb_cache[key] = data
+        _thumb_cache.move_to_end(key)
+        while len(_thumb_cache) > _THUMB_CACHE_MAX:
+            _thumb_cache.popitem(last=False)
+    return data
+
+
+# ---------------------------------------------------------------------------
 # People-grouping result cache
 # ---------------------------------------------------------------------------
 # The cosine-similarity clustering over all embeddings is O(N·G) where N is

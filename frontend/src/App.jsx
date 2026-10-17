@@ -911,7 +911,7 @@ export default function App() {
               galleryPerson ? (
                 <div key={photo.path} className={`photo-tile selectable${selected.has(photo.path) ? " selected" : ""}`}>
                   <button className="photo-tile-open" type="button" aria-label="Open photo" onClick={() => openViewer(photos, photos.findIndex((item) => item.path === photo.path), "all", galleryPerson.name)}>
-                    <LazyImage src={imageUrl(photo.path, photo.source)} alt="" />
+                    <LazyImage src={imageUrl(photo.path, photo.source, true)} alt="" />
                     {photo.faces ? <span className="photo-count-badge">{photo.faces} face{photo.faces === 1 ? "" : "s"}</span> : null}
                   </button>
                   <label className="photo-select">
@@ -921,7 +921,7 @@ export default function App() {
                 </div>
               ) : (
                 <button key={photo.path} className="photo-tile" type="button" aria-label="Open photo" onClick={() => openViewer(photos, photos.findIndex((item) => item.path === photo.path), "all", collectionName)}>
-                  <LazyImage src={imageUrl(photo.path, photo.source)} alt="" />
+                  <LazyImage src={imageUrl(photo.path, photo.source, true)} alt="" />
                   {photo.faces ? <span className="photo-count-badge">{photo.faces} face{photo.faces === 1 ? "" : "s"}</span> : null}
                 </button>
               )

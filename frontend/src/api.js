@@ -9,11 +9,12 @@ export async function requestJson(path, options = {}) {
   return payload;
 }
 
-export function imageUrl(path, source = "s3") {
+export function imageUrl(path, source = "s3", thumb = false) {
+  const thumbQuery = thumb ? "&thumb=true" : "";
   if (source === "s3" || !source) {
-    return `${API_BASE}/api/s3/image?key=${encodeURIComponent(path)}`;
+    return `${API_BASE}/api/s3/image?key=${encodeURIComponent(path)}${thumbQuery}`;
   }
-  return `${API_BASE}/api/image?path=${encodeURIComponent(path)}`;
+  return `${API_BASE}/api/image?path=${encodeURIComponent(path)}${thumbQuery}`;
 }
 
 export function faceUrl(face) {

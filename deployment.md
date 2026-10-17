@@ -216,3 +216,15 @@ Before pushing to GitHub:
 - [x] **No Build Artifacts**: `node_modules/`, `dist/`, `.venv/`, `__pycache__/` are ignored.
 - [x] **Clean Test Suite**: All tests in `tests/` pass (`python -m pytest`).
 - [x] **Dockerfiles Updated**: `frontend/Dockerfile` and `backend/Dockerfile` build independently with local contexts.
+
+
+//infooo
+free-tier RAM limits:
+
+Run this single command in your terminal:
+powershell
+.\.venv\Scripts\python -c "import sys; sys.path.insert(0, 'backend'); from storage import create_s3_storage; from service import index_s3; index_s3(create_s3_storage(), 'backend/index.sqlite3')"
+Git push the updated backend/index.sqlite3:
+powershell
+git commit -am "update index"; git push
+Render updates with the new index automatically in under a minute.

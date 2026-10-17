@@ -180,17 +180,21 @@ def create_app(
         return result
 
     @app.get("/api/s3/image")
-    def s3_image(key: str = "") -> Response:
+    def s3_image(key: str = "", thumb: bool = False) -> Response:
         try:
             require_s3_browsing()
             contents = s3_storage().read_image(key)
-            media_type = mimetypes.guess_type(key)[0] or "application/octet-stream"
+            if thumb:
+                contents = service.thumbnail_from_bytes(key, contents, max_dim=500)
+                media_type = "image/jpeg"
+            else:
+                media_type = mimetypes.guess_type(key)[0] or "application/octet-stream"
             return Response(
                 content=contents,
                 media_type=media_type,
                 headers={
                     "X-Content-Type-Options": "nosniff",
-                    "Cache-Control": "private, max-age=300",
+                    "Cache-Control": "public, max-age=86400",
                 },
             )
         except Exception as exc:
@@ -249,14 +253,18 @@ def create_app(
         )
 
     @app.get("/api/image")
-    def image(path: str = "") -> Response:
+    def image(path: str = "", thumb: bool = False) -> Response:
         try:
             contents = s3_storage().read_image(path)
-            media_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
+            if thumb:
+                contents = service.thumbnail_from_bytes(path, contents, max_dim=500)
+                media_type = "image/jpeg"
+            else:
+                media_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
             return Response(
                 content=contents,
                 media_type=media_type,
-                headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "private, max-age=300"},
+                headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "public, max-age=86400"},
             )
         except Exception as exc:
             LOGGER.exception("image failed for %s: %s", path, exc)
