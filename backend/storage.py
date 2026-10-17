@@ -141,6 +141,30 @@ class S3Storage:
             ) from exc
         return {"photos": photos, "next_token": None}
 
+    def list_all_keys(self) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+        paginator = self.client.get_paginator("list_objects_v2")
+        try:
+            for page in paginator.paginate(Bucket=self.bucket, Prefix=self.prefix):
+                for item in page.get("Contents", []):
+                    key = item.get("Key", "")
+                    if not key or Path(key).suffix.lower() not in SUPPORTED_EXTENSIONS:
+                        continue
+                    mtime_dt = item.get("LastModified")
+                    mtime_ns = int(mtime_dt.timestamp() * 1e9) if mtime_dt else 0
+                    results.append({
+                        "key": key,
+                        "size": item.get("Size", 0),
+                        "etag": item.get("ETag", "").strip('"'),
+                        "mtime_ns": mtime_ns,
+                    })
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "Unknown")
+            raise StorageError(f"S3 listing failed ({code}). Check s3:ListBucket permissions.") from exc
+        except BotoCoreError as exc:
+            raise StorageError("Could not connect to S3. Check network and AWS credentials.") from exc
+        return results
+
     def read_image(self, key: str) -> bytes:
         if (
             not key

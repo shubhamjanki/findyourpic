@@ -19,8 +19,8 @@ RUN pip install --no-cache-dir --upgrade pip \
 ENV PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app \
     FACE_SEARCH_DB=/data/index.sqlite3 \
-    PHOTO_ROOT=/photos \
-    STORAGE_BACKEND=local
+    STORAGE_BACKEND=s3 \
+    S3_BROWSE_ENABLED=true
 
 EXPOSE 8000
 

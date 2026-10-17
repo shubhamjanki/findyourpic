@@ -81,7 +81,7 @@ class Settings:
         if self.photo_root is not None:
             return self.photo_root.expanduser().resolve()
         indexed = index_stats(self.database).get("root")
-        if isinstance(indexed, str) and indexed:
+        if isinstance(indexed, str) and indexed and not indexed.startswith("s3://"):
             return Path(indexed).expanduser().resolve()
         local_images = Path.cwd() / "images"
         if local_images.is_dir():

@@ -173,6 +173,8 @@ def crop_face_from_bytes(image_bytes: bytes, box: tuple[int, int, int, int]) -> 
 
 def collection_name(database: Path, fallback_root: Path) -> str:
     fallback = fallback_root.name or "My collection"
+    if fallback == "photos":
+        fallback = "S3 Photos"
     if not database.exists():
         return fallback
     with sqlite3.connect(database) as connection:
@@ -182,6 +184,113 @@ def collection_name(database: Path, fallback_root: Path) -> str:
             "SELECT value FROM ui_settings WHERE key = 'collection_name'"
         ).fetchone()
     return row[0] if row else fallback
+
+
+def index_s3(
+    store: Any,
+    database: Path,
+    backend_name: str = "insightface",
+    max_dimension: int = 1600,
+    progress_callback: Any = None,
+) -> Any:
+    from io import BytesIO
+    from face_search.backends import create_backend
+    from face_search.backends.base import BoundingBox
+    from face_search.index import IndexReport, ProcessedImage, IndexedFace, _schema, _store_result
+    from face_search.utils import normalize_embedding
+
+    database = database.expanduser().resolve()
+    database.parent.mkdir(parents=True, exist_ok=True)
+
+    items = store.list_all_keys()
+    report = IndexReport(scanned=len(items))
+    if progress_callback is not None:
+        progress_callback("checking", 0, len(items))
+
+    backend = create_backend(backend_name)
+    source_root = f"s3://{store.bucket}/{store.prefix}"
+
+    with sqlite3.connect(database) as connection:
+        _schema(connection)
+        previous_backend = connection.execute(
+            "SELECT value FROM metadata WHERE key = 'backend'"
+        ).fetchone()
+        if previous_backend and previous_backend[0] != backend_name:
+            connection.execute("DELETE FROM files")
+            report.backend_changed = True
+
+        connection.execute(
+            "INSERT OR REPLACE INTO metadata(key, value) VALUES ('backend', ?)",
+            (backend_name,),
+        )
+        connection.execute(
+            "INSERT OR REPLACE INTO metadata(key, value) VALUES ('source_root', ?)",
+            (source_root,),
+        )
+
+        existing = {
+            row[0]: (row[1], row[2], row[3])
+            for row in connection.execute("SELECT path, mtime_ns, size, sha256 FROM files")
+        }
+        discovered_keys = {item["key"] for item in items}
+        deleted = {path for path in existing if path not in discovered_keys}
+        if deleted:
+            connection.executemany("DELETE FROM files WHERE path = ?", [(p,) for p in deleted])
+            report.removed = len(deleted)
+
+        tasks = []
+        for checked, item in enumerate(items, start=1):
+            key = item["key"]
+            old = existing.get(key)
+            if old and old[1] == item["size"] and old[2] == item["etag"]:
+                report.skipped += 1
+            else:
+                tasks.append(item)
+            if progress_callback is not None:
+                progress_callback("checking", checked, len(items))
+
+        if progress_callback is not None:
+            progress_callback("indexing", 0, len(tasks))
+
+        for completed, item in enumerate(tasks, start=1):
+            key = item["key"]
+            processed = ProcessedImage(key, item["mtime_ns"], item["size"], item["etag"])
+            try:
+                data = store.read_image(key)
+                with Image.open(BytesIO(data)) as source:
+                    source = ImageOps.exif_transpose(source).convert("RGB")
+                    original_size = source.size
+                    if max(original_size) > max_dimension:
+                        scale = max_dimension / max(original_size)
+                        new_size = (max(1, round(original_size[0] * scale)), max(1, round(original_size[1] * scale)))
+                        resized = source.resize(new_size, Image.Resampling.BILINEAR)
+                        image = np.asarray(resized)
+                        scale_x = image.shape[1] / original_size[0]
+                        scale_y = image.shape[0] / original_size[1]
+                    else:
+                        image = np.asarray(source)
+                        scale_x = 1.0
+                        scale_y = 1.0
+
+                    for face_index, detection in enumerate(backend.detect(image)):
+                        raw_box = detection.bbox
+                        x1 = min(original_size[0], max(0, round(raw_box.x1 / scale_x)))
+                        y1 = min(original_size[1], max(0, round(raw_box.y1 / scale_y)))
+                        x2 = min(original_size[0], max(x1, round(raw_box.x2 / scale_x)))
+                        y2 = min(original_size[1], max(y1, round(raw_box.y2 / scale_y)))
+                        embedding = normalize_embedding(backend.embed(image, detection))
+                        processed.faces.append(
+                            IndexedFace(face_index, BoundingBox(x1, y1, x2, y2), embedding)
+                        )
+            except Exception as exc:
+                processed.error = f"{type(exc).__name__}: {exc}"
+
+            _store_result(connection, processed, report)
+            if progress_callback is not None:
+                progress_callback("indexing", completed, len(tasks))
+
+        connection.commit()
+    return report
 
 
 def set_collection_name(database: Path, name: str) -> str:
@@ -417,7 +526,9 @@ def config_payload(settings: Settings) -> dict[str, Any]:
     host_root = os.environ.get("HOST_PHOTO_ROOT", "").strip()
     stats = index_stats(settings.database) if settings.database.exists() else {}
     indexed_root = stats.get("root") if isinstance(stats, dict) else None
-    if host_root:
+    if settings.storage_backend == "s3":
+        collection = "S3 Photos"
+    elif host_root:
         collection = host_root
     elif indexed_root and not indexed_root.startswith("/"):
         collection = indexed_root

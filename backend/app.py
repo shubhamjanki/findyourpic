@@ -259,13 +259,20 @@ def create_app(
             raise HTTPException(status_code=409, detail="Indexing is already in progress.")
         try:
             cfg = current_settings()
-            report = index_directory(
-                cfg.collection_root(),
-                cfg.database,
-                backend,
-                workers=workers,
-                show_progress=False,
-            )
+            if cfg.storage_backend == "s3":
+                report = service.index_s3(
+                    s3_storage(),
+                    cfg.database,
+                    backend,
+                )
+            else:
+                report = index_directory(
+                    cfg.collection_root(),
+                    cfg.database,
+                    backend,
+                    workers=workers,
+                    show_progress=False,
+                )
             return {"report": service.report_payload(report), "stats": index_stats(cfg.database)}
         finally:
             app.state.index_run_lock.release()
@@ -295,16 +302,26 @@ def create_app(
         def run_index() -> None:
             cfg = current_settings()
             try:
-                report = index_directory(
-                    cfg.collection_root(),
-                    cfg.database,
-                    backend,
-                    workers=workers,
-                    show_progress=False,
-                    progress_callback=lambda phase, completed, total: update_job(
-                        phase=phase, completed=completed, total=total
-                    ),
-                )
+                if cfg.storage_backend == "s3":
+                    report = service.index_s3(
+                        s3_storage(),
+                        cfg.database,
+                        backend,
+                        progress_callback=lambda phase, completed, total: update_job(
+                            phase=phase, completed=completed, total=total
+                        ),
+                    )
+                else:
+                    report = index_directory(
+                        cfg.collection_root(),
+                        cfg.database,
+                        backend,
+                        workers=workers,
+                        show_progress=False,
+                        progress_callback=lambda phase, completed, total: update_job(
+                            phase=phase, completed=completed, total=total
+                        ),
+                    )
                 update_job(
                     status="completed",
                     report=service.report_payload(report),
