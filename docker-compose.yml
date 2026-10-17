@@ -1,17 +1,25 @@
 services:
   api:
     build:
-      context: .
-      dockerfile: apps/backend/Dockerfile
+      context: ./backend
+      dockerfile: Dockerfile
+    gpus: all
     environment:
       FACE_SEARCH_DB: /data/index.sqlite3
       PHOTO_ROOT: /photos
+      HOST_PHOTO_ROOT: ${PHOTO_ROOT}
       STORAGE_BACKEND: local
       CORS_ORIGINS: http://127.0.0.1:8511,http://localhost:8511
+      S3_BROWSE_ENABLED: ${S3_BROWSE_ENABLED:-false}
+      S3_BUCKET: ${S3_BUCKET:-}
+      S3_PREFIX: ${S3_PREFIX:-}
+      AWS_REGION: ${AWS_REGION:-}
+      AWS_PROFILE: ${AWS_PROFILE:-default}
     volumes:
       - ${FACE_SEARCH_DIR:-${USERPROFILE}/.face_search}:/data
       - ${PHOTO_ROOT:-${USERPROFILE}/Pictures}:/photos
       - ${INSIGHTFACE_DIR:-${USERPROFILE}/.insightface}:/root/.insightface:ro
+      - ${USERPROFILE}/.aws:/root/.aws:ro
     expose:
       - "8000"
     ports:
@@ -20,8 +28,8 @@ services:
 
   web:
     build:
-      context: .
-      dockerfile: apps/frontend/Dockerfile
+      context: ./frontend
+      dockerfile: Dockerfile
     ports:
       # Loopback-only. One URL for the whole local UI.
       - "127.0.0.1:8511:80"

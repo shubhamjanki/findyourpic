@@ -10,6 +10,36 @@ from face_search.index import index_stats
 from face_search.utils import DEFAULT_DATABASE
 
 
+def _load_dotenv_if_present() -> None:
+    """Load a .env file from the project root or backend directory if present.
+
+    This enables local dev runs without Docker to pick up PHOTO_ROOT,
+    FACE_SEARCH_DB, etc. without needing to export them manually.
+    Variables already set in the environment take precedence.
+    """
+    candidates = [
+        Path.cwd() / ".env",
+        Path(__file__).resolve().parent / ".env",
+        Path(__file__).resolve().parents[1] / ".env",
+    ]
+    for env_path in candidates:
+        if env_path.is_file():
+            with env_path.open(encoding="utf-8") as file_:
+                for line in file_:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, _, value = line.partition("=")
+                    key = key.strip()
+                    value = value.strip()
+                    if key and key not in os.environ:
+                        os.environ[key] = value
+            break
+
+
+_load_dotenv_if_present()
+
+
 def _split_origins(raw: str) -> list[str]:
     return [origin.strip() for origin in raw.split(",") if origin.strip()]
 

@@ -2,19 +2,29 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import threading
 import time
 import uuid
 from collections import OrderedDict
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 from PIL import Image, ImageOps
 
-from apps.backend.settings import Settings
-from apps.backend.storage import LocalStorage, create_storage
+try:
+    from backend.settings import Settings
+    from backend.storage import LocalStorage, create_storage
+except ImportError:
+    try:
+        from apps.backend.settings import Settings
+        from apps.backend.storage import LocalStorage, create_storage
+    except ImportError:
+        from settings import Settings
+        from storage import LocalStorage, create_storage
 from face_search.index import index_stats
 from face_search.utils import SUPPORTED_EXTENSIONS
 
@@ -25,6 +35,35 @@ QUERY_TTL_SECONDS = 15 * 60
 
 _query_lock = threading.Lock()
 _query_cache: OrderedDict[str, tuple[float, list[Any]]] = OrderedDict()
+
+# ---------------------------------------------------------------------------
+# Face thumbnail cache
+# ---------------------------------------------------------------------------
+# Cropping a 320 px thumbnail from a 20-50 MB RAW photo takes ~1 s per call.
+# Cache up to 512 results in memory keyed by (resolved_path, box).
+_face_cache_lock = threading.Lock()
+_face_cache: OrderedDict[tuple, bytes] = OrderedDict()
+_FACE_CACHE_MAX = 512
+
+
+def _cache_face(key: tuple, data: bytes) -> bytes:
+    with _face_cache_lock:
+        _face_cache[key] = data
+        _face_cache.move_to_end(key)
+        while len(_face_cache) > _FACE_CACHE_MAX:
+            _face_cache.popitem(last=False)
+    return data
+
+
+# ---------------------------------------------------------------------------
+# People-grouping result cache
+# ---------------------------------------------------------------------------
+# The cosine-similarity clustering over all embeddings is O(N·G) where N is
+# the total face count and G is the number of groups — for 4500+ rows this
+# can take > 1 s.  We cache the full result and invalidate it only when the
+# database file's (mtime, size) pair changes (i.e. after re-indexing).
+_people_cache_lock = threading.Lock()
+_people_cache: dict[str, Any] = {}   # keys: 'key' (mtime,size), 'result'
 
 
 def remember_faces(faces: list[Any]) -> str:
@@ -79,6 +118,13 @@ def storage_for(settings: Settings) -> LocalStorage:
 def crop_face_jpeg(image_path: Path, box: tuple[int, int, int, int]) -> bytes:
     from io import BytesIO
 
+    cache_key = (str(image_path), box)
+    with _face_cache_lock:
+        cached = _face_cache.get(cache_key)
+        if cached is not None:
+            _face_cache.move_to_end(cache_key)
+            return cached
+
     with Image.open(image_path) as source:
         image = ImageOps.exif_transpose(source).convert("RGB")
         x1, y1, x2, y2 = box
@@ -92,7 +138,9 @@ def crop_face_jpeg(image_path: Path, box: tuple[int, int, int, int]) -> bytes:
         crop.thumbnail((320, 320))
         output = BytesIO()
         crop.save(output, format="JPEG", quality=88)
-        return output.getvalue()
+        data = output.getvalue()
+
+    return _cache_face(cache_key, data)
 
 
 def collection_name(database: Path, fallback_root: Path) -> str:
@@ -203,16 +251,17 @@ def list_photos(
     }
 
 
-def list_people(database: Path, *, page: int, page_size: int, query: str) -> dict[str, Any]:
-    empty = {
-        "people": [],
-        "total": 0,
-        "page": page,
-        "page_size": page_size,
-        "threshold": PERSON_MATCH_THRESHOLD,
-    }
-    if not database.exists():
-        return empty
+def _db_cache_key(database: Path) -> tuple[int, int] | None:
+    """Return (mtime_ns, size) for the database file, or None if it does not exist."""
+    try:
+        st = database.stat()
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+
+
+def _compute_people(database: Path) -> list[dict[str, Any]]:
+    """Run the full cosine-similarity clustering and return the people list."""
     with sqlite3.connect(database) as connection:
         rows = connection.execute(
             """SELECT path, face_index, x1, y1, x2, y2, dimension, embedding
@@ -221,12 +270,14 @@ def list_people(database: Path, *, page: int, page_size: int, query: str) -> dic
         labels = dict(connection.execute(
             "SELECT person_key, name FROM person_labels"
         ).fetchall()) if table_exists(connection, "person_labels") else {}
+    if not rows:
+        return []
     groups: list[dict[str, Any]] = []
-    dimension = rows[0][6] if rows else 0
+    dimension = rows[0][6]
     centroid_matrix = np.empty((len(rows), dimension), dtype=np.float32)
     sums = np.empty_like(centroid_matrix)
-    for path, face_index, x1, y1, x2, y2, dimension, blob in rows:
-        vector = np.frombuffer(blob, dtype=np.float32, count=dimension)
+    for path, face_index, x1, y1, x2, y2, dim, blob in rows:
+        vector = np.frombuffer(blob, dtype=np.float32, count=dim)
         if not groups:
             best_index, best_score = None, -1.0
         else:
@@ -262,6 +313,42 @@ def list_people(database: Path, *, page: int, page_size: int, query: str) -> dic
             "preview": first,
             "photos": photos,
         })
+    return people
+
+
+def list_people(database: Path, *, page: int, page_size: int, query: str) -> dict[str, Any]:
+    empty = {
+        "people": [],
+        "total": 0,
+        "page": page,
+        "page_size": page_size,
+        "threshold": PERSON_MATCH_THRESHOLD,
+    }
+    if not database.exists():
+        return empty
+
+    db_key = _db_cache_key(database)
+    with _people_cache_lock:
+        cached = _people_cache.get("result")
+        if cached is not None and _people_cache.get("key") == db_key:
+            all_people = cached
+        else:
+            all_people = _compute_people(database)
+            _people_cache["key"] = db_key
+            _people_cache["result"] = all_people
+
+    # Apply per-request label overrides so renamed people reflect immediately
+    # without busting the cache (labels are cheap to re-fetch).
+    with sqlite3.connect(database) as connection:
+        labels = dict(connection.execute(
+            "SELECT person_key, name FROM person_labels"
+        ).fetchall()) if table_exists(connection, "person_labels") else {}
+
+    people = [
+        {**p, "name": labels.get(p["key"], p["name"])}
+        for p in all_people
+    ]
+
     if query:
         people = [person for person in people if query in person["name"].casefold()]
         people.sort(key=lambda person: person["name"].casefold() != query)
@@ -290,11 +377,20 @@ def report_payload(report: Any) -> dict[str, Any]:
 
 
 def config_payload(settings: Settings) -> dict[str, Any]:
-    collection = settings.collection_root()
+    host_root = os.environ.get("HOST_PHOTO_ROOT", "").strip()
+    stats = index_stats(settings.database) if settings.database.exists() else {}
+    indexed_root = stats.get("root") if isinstance(stats, dict) else None
+    if host_root:
+        collection = host_root
+    elif indexed_root and not indexed_root.startswith("/"):
+        collection = indexed_root
+    else:
+        root_str = str(settings.collection_root())
+        collection = "images" if root_str in ("/photos", "photos", "/data/photos") else root_str
     return {
         "database": str(settings.database),
-        "collection": str(collection),
-        "stats": index_stats(settings.database) if settings.database.exists() else {},
+        "collection": collection,
+        "stats": stats,
         "backends": ["insightface", "dlib"],
         "storage": settings.storage_backend,
     }

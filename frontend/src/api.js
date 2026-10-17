@@ -9,7 +9,10 @@ export async function requestJson(path, options = {}) {
   return payload;
 }
 
-export function imageUrl(path) {
+export function imageUrl(path, source = "local") {
+  if (source === "s3") {
+    return `${API_BASE}/api/s3/image?key=${encodeURIComponent(path)}`;
+  }
   return `${API_BASE}/api/image?path=${encodeURIComponent(path)}`;
 }
 

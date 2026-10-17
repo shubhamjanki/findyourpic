@@ -1,6 +1,6 @@
-# Local Face Search
+# Find Your Pic (findyourpic)
 
-Local Face Search indexes faces in an image folder you own or are authorized to organize, then ranks images against one or more reference photos. It is intended for personal photo organization. Get consent from the people in the photos before indexing or searching them. Do not use it to identify or track people without their knowledge or permission.
+Find Your Pic indexes faces in an image folder you own or are authorized to organize, then ranks images against one or more reference photos. It is intended for personal photo organization. Get consent from the people in the photos before indexing or searching them. Do not use it to identify or track people without their knowledge or permission.
 
 Image files and face embeddings stay on this machine. There is no network search, telemetry, or runtime model download. InsightFace model files must already be installed locally before the first run.
 
@@ -26,6 +26,16 @@ The default backend is InsightFace ArcFace. Install the InsightFace `buffalo_l` 
 
 To use the alternative dlib HOG backend, install its optional extra with `python -m pip install -e ".[dlib]"` and pass `--backend dlib`. dlib installation is platform-sensitive; if a source build fails, install compiler/CMake prerequisites or a matching trusted wheel. The two backends produce incompatible embedding dimensions, so switching backends rebuilds the index.
 
+## Project Structure
+
+```text
+findyourpic/
+├── frontend/             # Standalone React / Vite UI (Vercel, Cloudflare, Netlify)
+├── backend/              # Standalone FastAPI Engine & InsightFace (Render, Railway, Fly.io)
+├── tests/                # Automated Pytest suite
+└── docker-compose.yml    # Full-stack local dev / VPS setup
+```
+
 ## Docker Compose (local-only)
 
 The default way to run the UI is a two-container layout that mirrors the future hosted split while staying on your machine. **Compose publishes both ports to the loopback interface only (`127.0.0.1`) and there is no authentication in this version; do not change the bindings or expose the containers to a network.**
@@ -33,13 +43,13 @@ The default way to run the UI is a two-container layout that mirrors the future 
 ```text
 Browser
   └── http://127.0.0.1:8511
-        ├── apps_web_nginx      serves the React build; proxies /api/* to the API
-        └── apps_api_FastAPI    /api config, photos, people, image, face, detect,
-              │                 search, labels, feedback, zip, delete
-              ├── face_search   index, search, InsightFace
-              ├── SQLite        ~/.face_search/index.sqlite3 (mounted at /data)
-              ├── photos        PHOTO_ROOT (mounted at /photos)
-              └── models        ~/.insightface/models/buffalo_l (read-only)
+        ├── frontend_web_nginx    serves the React build; proxies /api/* to the API
+        └── backend_api_FastAPI   /api config, photos, people, image, face, detect,
+              │                   search, labels, feedback, zip, delete
+              ├── face_search     index, search, InsightFace
+              ├── SQLite          ~/.face_search/index.sqlite3 (mounted at /data)
+              ├── photos          PHOTO_ROOT (mounted at /photos)
+              └── models          ~/.insightface/models/buffalo_l (read-only)
 ```
 
 Copy `.env.example` to `.env`, point the variables at your existing index, photo folder, and model pack, then build and start:
@@ -49,6 +59,13 @@ Copy-Item .env.example .env   # then edit FACE_SEARCH_DIR, PHOTO_ROOT, INSIGHTFA
 docker compose up --build
 ```
 
+The Compose API uses NVIDIA GPU acceleration for InsightFace indexing and face
+search when Docker Desktop GPU support and compatible NVIDIA drivers are
+available. The API container requests all available GPUs; without working GPU
+passthrough, it will not start. For CPU-only use, remove `gpus: all` from the
+API service in `docker-compose.yml` and replace `onnxruntime-gpu[cuda,cudnn]`
+with `onnxruntime` in its Dockerfile.
+
 Open `http://127.0.0.1:8511`. Environment variables:
 
 | Variable | Host path | Container |
@@ -56,6 +73,9 @@ Open `http://127.0.0.1:8511`. Environment variables:
 | `FACE_SEARCH_DIR` | folder containing `index.sqlite3` | `/data` → `FACE_SEARCH_DB=/data/index.sqlite3` |
 | `PHOTO_ROOT` | indexed photo collection | `/photos` |
 | `INSIGHTFACE_DIR` | `~/.insightface` (model weights) | `/root/.insightface`, read-only |
+| `S3_BROWSE_ENABLED` | `false` by default; set to `true` to enable the All photos → Browse S3 bucket button | API environment |
+| `S3_BUCKET`, `AWS_REGION`, `AWS_PROFILE` | private bucket, its region, and a profile in `%USERPROFILE%\.aws` | API environment; AWS profile directory mounted read-only |
+| `S3_PREFIX` | optional key prefix; blank browses supported images in the whole bucket | API environment |
 
 The existing corpus is imported, not re-embedded: the SQLite database (its stored face embeddings), the photo folder, and the model pack are bind-mounted into the API container, so startup does not rescan or regenerate the ~4,500 face vectors. If you later add photos, update the index inside the container instead:
 
@@ -63,7 +83,7 @@ The existing corpus is imported, not re-embedded: the SQLite database (its store
 docker compose exec api python -m face_search.cli index --images /photos --db /data/index.sqlite3 --workers 2
 ```
 
-or use the Collection → Update index control, which indexes the configured photo root. The API reads its database and photo root from the environment (`FACE_SEARCH_DB`, `PHOTO_ROOT`), never from client-supplied `db`/`collection` query parameters. Its CORS allowlist covers the local web origin only (`http://127.0.0.1:8511`). Hosted storage adapters (Cloudflare R2, Supabase) exist in `apps/backend/storage.py` as stubs that raise a clear "not configured" error.
+or use the Collection → Update index control, which indexes the configured photo root and shows indexing progress with an estimated time remaining. The API reads its database and photo root from the environment (`FACE_SEARCH_DB`, `PHOTO_ROOT`), never from client-supplied `db`/`collection` query parameters. Its CORS allowlist covers the local web origin only (`http://127.0.0.1:8511`). Local photo browsing and indexing use filesystem storage. An opt-in **Browse S3 bucket** control can display private S3 images through the backend when `S3_BROWSE_ENABLED=true`; it does not migrate or index those images. This unauthenticated feature is for trusted local use only. The private S3 smoke-upload endpoint is separate and also opt-in. See [deployment.md](deployment.md) for configuration and IAM requirements. Cloudflare R2 and Supabase adapters remain stubs.
 
 ## Browser UI
 
@@ -135,7 +155,7 @@ Face matching is fallible. Lighting, pose, age changes, image quality, occlusion
 
 ## Design decisions
 
-- **Backends:** InsightFace ArcFace is the default for practical embedding quality; its model and ONNX execution are local and CPU-only. dlib/face_recognition remains an optional alternative behind the same `detect()`/`embed()` interface.
+- **Backends:** InsightFace ArcFace is the default for practical embedding quality; its model and ONNX execution are local, using CUDA when available and CPU otherwise. The Docker Compose API is configured for NVIDIA GPU acceleration. dlib/face_recognition remains an optional alternative behind the same `detect()`/`embed()` interface.
 - **Index:** SQLite stores file metadata, one row per detected face, normalized float32 embeddings, and oriented-image bounding boxes. SHA-256 is checked alongside modification time and size, so same-timestamp content changes are still detected. SQLite keeps setup simple and is appropriate for local collections; indexing workers compute in separate processes while one parent process writes the database.
 - **100k+ images:** use FAISS (or another ANN index) for vector candidate retrieval, retain SQLite as the durable metadata store, and add index versioning/rebuild and recall benchmarks. For a large collection, batch embedding, tune worker count for memory, and persist an ANN index to avoid repeatedly scanning all face vectors.
 

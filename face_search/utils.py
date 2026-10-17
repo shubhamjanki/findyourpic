@@ -21,12 +21,18 @@ SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 DEFAULT_DATABASE = Path.home() / ".face_search" / "index.sqlite3"
 
 
+# Subdirectory names that should be excluded from indexing (used for internal copies).
+_EXCLUDED_SUBDIRS = frozenset({"liked", "disliked", "deleted", "smoke-tests"})
+
+
 def iter_image_paths(root: Path) -> list[Path]:
     if not root.is_dir():
         raise NotADirectoryError(f"Image folder does not exist: {root}")
     return sorted(
         path for path in root.rglob("*")
-        if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS
+        if path.is_file()
+        and path.suffix.lower() in SUPPORTED_EXTENSIONS
+        and not any(part in _EXCLUDED_SUBDIRS for part in path.relative_to(root).parts)
     )
 
 

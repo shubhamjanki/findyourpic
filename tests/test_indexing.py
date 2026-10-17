@@ -38,6 +38,31 @@ def test_index_incremental_hash_and_deleted_files(tmp_path: Path) -> None:
     assert index_stats(database)["faces"] == 0
 
 
+def test_index_reports_checking_and_indexing_progress(tmp_path: Path) -> None:
+    collection = tmp_path / "photos"
+    _write_image(collection / "first.jpg", (255, 0, 0))
+    _write_image(collection / "second.jpg", (0, 255, 0))
+    progress: list[tuple[str, int, int]] = []
+
+    index_directory(
+        collection,
+        tmp_path / "index.sqlite3",
+        backend=FakeBackend(),
+        show_progress=False,
+        progress_callback=lambda phase, completed, total: progress.append(
+            (phase, completed, total)
+        ),
+    )
+
+    assert progress[0] == ("checking", 0, 2)
+    assert ("checking", 2, 2) in progress
+    assert progress[-3:] == [
+        ("indexing", 0, 2),
+        ("indexing", 1, 2),
+        ("indexing", 2, 2),
+    ]
+
+
 def test_corrupt_image_is_reported_without_stopping_index(tmp_path: Path) -> None:
     collection = tmp_path / "photos"
     _write_image(collection / "valid.png", (255, 0, 0))
@@ -69,6 +94,20 @@ def test_index_can_add_second_folder_incrementally(tmp_path: Path) -> None:
     repeat = index_directory(second_collection, database, backend=FakeBackend(), show_progress=False)
     assert (repeat.indexed, repeat.skipped, repeat.removed) == (0, 1, 0)
     assert index_stats(database)["files"] == 2
+
+
+def test_index_reports_when_source_root_changes(tmp_path: Path) -> None:
+    first_collection = tmp_path / "first"
+    second_collection = tmp_path / "second"
+    _write_image(first_collection / "person.jpg", (255, 0, 0))
+    _write_image(second_collection / "person.jpg", (0, 255, 0))
+    database = tmp_path / "index.sqlite3"
+
+    first = index_directory(first_collection, database, backend=FakeBackend(), show_progress=False)
+    assert first.source_changed is False
+
+    second = index_directory(second_collection, database, backend=FakeBackend(), show_progress=False)
+    assert second.source_changed is True
 
 
 def test_index_uses_exif_oriented_dimensions_for_boxes(tmp_path: Path) -> None:

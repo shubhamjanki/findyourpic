@@ -4,23 +4,38 @@ from __future__ import annotations
 
 import base64
 import binascii
+from io import BytesIO
 import logging
 import mimetypes
+import os
 import shutil
 import sqlite3
 import tempfile
+import threading
 import zipfile
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from PIL import Image, UnidentifiedImageError
 
-from apps.backend.settings import Settings
-from apps.backend.storage import StorageError
-from apps.backend import service
+try:
+    from backend.settings import Settings
+    from backend.storage import StorageError, create_s3_storage
+    from backend import service
+except ImportError:
+    try:
+        from apps.backend.settings import Settings
+        from apps.backend.storage import StorageError, create_s3_storage
+        from apps.backend import service
+    except ImportError:
+        from settings import Settings
+        from storage import StorageError, create_s3_storage
+        import service
 from face_search.backends import create_backend
 from face_search.index import clear_index, index_directory, index_stats
 from face_search.search import (
@@ -54,6 +69,9 @@ def create_app(
     )
     app = FastAPI(title="Find Your Pic API", docs_url=None, redoc_url=None)
     app.state.settings = settings
+    app.state.index_run_lock = threading.Lock()
+    app.state.index_job_lock = threading.Lock()
+    app.state.index_job = None
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
@@ -70,6 +88,16 @@ def create_app(
             return service.storage_for(current_settings())
         except StorageError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    def s3_storage():
+        try:
+            return create_s3_storage()
+        except StorageError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    def require_s3_browsing() -> None:
+        if os.environ.get("S3_BROWSE_ENABLED", "").strip().lower() != "true":
+            raise HTTPException(status_code=404, detail="S3 image browsing is disabled.")
 
     @app.exception_handler(HTTPException)
     async def http_exception_handler(_request: Request, exc: HTTPException) -> JSONResponse:
@@ -99,6 +127,52 @@ def create_app(
     @app.get("/api/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.post("/api/storage/s3/check-upload")
+    def s3_check_upload(payload: dict[str, Any]) -> dict[str, Any]:
+        if os.environ.get("S3_CHECK_UPLOAD_ENABLED", "").strip().lower() != "true":
+            raise HTTPException(status_code=404, detail="S3 smoke uploads are disabled.")
+        filename = payload.get("name")
+        encoded = payload.get("data")
+        if not isinstance(filename, str) or not isinstance(encoded, str):
+            raise ValueError("Provide an image filename and base64-encoded image data.")
+        suffix = Path(filename).suffix.lower()
+        if suffix not in SUPPORTED_EXTENSIONS:
+            raise ValueError("Supported image types: JPG, PNG, WEBP, and BMP.")
+        try:
+            contents = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("The uploaded image data is invalid.") from exc
+        if not contents or len(contents) > MAX_REQUEST_BYTES:
+            raise ValueError("The uploaded image is empty or exceeds the 64 MB limit.")
+        try:
+            with Image.open(BytesIO(contents)) as image:
+                image.verify()
+        except (UnidentifiedImageError, OSError) as exc:
+            raise ValueError("The uploaded data is not a valid image.") from exc
+
+        content_type = mimetypes.guess_type(f"upload{suffix}")[0] or "application/octet-stream"
+        return s3_storage().upload_check(contents, filename, content_type)
+
+    @app.get("/api/s3/photos")
+    def s3_photos(page_size: int = 24, start_after: str | None = None) -> dict[str, Any]:
+        require_s3_browsing()
+        result = s3_storage().list_images(page_size=page_size, start_after=start_after)
+        return result
+
+    @app.get("/api/s3/image")
+    def s3_image(key: str = "") -> Response:
+        require_s3_browsing()
+        contents = s3_storage().read_image(key)
+        media_type = mimetypes.guess_type(key)[0] or "application/octet-stream"
+        return Response(
+            content=contents,
+            media_type=media_type,
+            headers={
+                "X-Content-Type-Options": "nosniff",
+                "Cache-Control": "private, max-age=300",
+            },
+        )
 
     @app.get("/api/config")
     def config() -> dict[str, Any]:
@@ -175,24 +249,93 @@ def create_app(
             headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "private, max-age=300"},
         )
 
-    @app.post("/api/index")
-    def index_collection(payload: dict[str, Any]) -> dict[str, Any]:
-        cfg = current_settings()
-        collection = cfg.collection_root()
+    def index_options(payload: dict[str, Any]) -> tuple[str, int]:
         backend = payload.get("backend", "insightface")
         if backend not in ("insightface", "dlib"):
             raise ValueError("Unsupported face backend.")
         workers = payload.get("workers", 1)
         if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
             raise ValueError("Workers must be a positive integer.")
-        report = index_directory(
-            collection,
-            cfg.database,
-            backend,
-            workers=workers,
-            show_progress=False,
-        )
-        return {"report": service.report_payload(report), "stats": index_stats(cfg.database)}
+        return backend, workers
+
+    @app.post("/api/index")
+    def index_collection(payload: dict[str, Any]) -> dict[str, Any]:
+        backend, workers = index_options(payload)
+        if not app.state.index_run_lock.acquire(blocking=False):
+            raise HTTPException(status_code=409, detail="Indexing is already in progress.")
+        try:
+            cfg = current_settings()
+            report = index_directory(
+                cfg.collection_root(),
+                cfg.database,
+                backend,
+                workers=workers,
+                show_progress=False,
+            )
+            return {"report": service.report_payload(report), "stats": index_stats(cfg.database)}
+        finally:
+            app.state.index_run_lock.release()
+
+    @app.post("/api/index/start", status_code=202)
+    def start_index(payload: dict[str, Any]) -> dict[str, str]:
+        backend, workers = index_options(payload)
+        if not app.state.index_run_lock.acquire(blocking=False):
+            raise HTTPException(status_code=409, detail="Indexing is already in progress.")
+
+        job_id = uuid4().hex
+        with app.state.index_job_lock:
+            app.state.index_job = {
+                "job_id": job_id,
+                "status": "running",
+                "phase": "checking",
+                "completed": 0,
+                "total": 0,
+            }
+
+        def update_job(**updates: Any) -> None:
+            with app.state.index_job_lock:
+                job = app.state.index_job
+                if job is not None and job["job_id"] == job_id:
+                    app.state.index_job = {**job, **updates}
+
+        def run_index() -> None:
+            cfg = current_settings()
+            try:
+                report = index_directory(
+                    cfg.collection_root(),
+                    cfg.database,
+                    backend,
+                    workers=workers,
+                    show_progress=False,
+                    progress_callback=lambda phase, completed, total: update_job(
+                        phase=phase, completed=completed, total=total
+                    ),
+                )
+                update_job(
+                    status="completed",
+                    report=service.report_payload(report),
+                    stats=index_stats(cfg.database),
+                )
+            except Exception as exc:
+                LOGGER.exception("Indexing job %s failed.", job_id)
+                update_job(status="failed", error=str(exc))
+            finally:
+                app.state.index_run_lock.release()
+
+        try:
+            threading.Thread(target=run_index, name=f"index-{job_id}", daemon=True).start()
+        except Exception:
+            app.state.index_run_lock.release()
+            raise
+        return {"job_id": job_id}
+
+    @app.get("/api/index/status/{job_id}")
+    def index_status(job_id: str) -> dict[str, Any]:
+        with app.state.index_job_lock:
+            job = app.state.index_job
+            if job is None or job["job_id"] != job_id:
+                raise HTTPException(status_code=404, detail="Indexing job not found.")
+            return dict(job)
 
     @app.post("/api/detect")
     def detect(payload: dict[str, Any]) -> dict[str, Any]:

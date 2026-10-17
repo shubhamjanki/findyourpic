@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "local-face-search"
+version = "0.1.0"
+description = "Offline face-based search for authorized local image collections"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24",
+  "Pillow>=10.0",
+  "tqdm>=4.66",
+  "insightface>=0.7.3",
+  # CPU-only ONNX Runtime by default; install onnxruntime-gpu separately for CUDA.
+  "onnxruntime>=1.17",
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.27",
+  "boto3>=1.34",
+]
+
+[project.optional-dependencies]
+dlib = ["face-recognition>=1.3.0", "dlib>=19.24"]
+ui = ["streamlit>=1.32"]
+# httpx is the ASGI transport used by FastAPI TestClient.
+dev = ["pytest>=8.0", "httpx>=0.27"]
+
+[project.scripts]
+face-search = "face_search.cli:main"
+face-search-ui = "face_search.web:main"
+
+[tool.setuptools.packages.find]
+include = ["face_search*", "apps*"]
+
+[tool.setuptools.package-data]
+face_search = ["web/*.html", "web/*.css", "web/*.js"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

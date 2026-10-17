@@ -36,8 +36,10 @@ npm run dev        # http://127.0.0.1:5173, Vite proxies /api → 127.0.0.1:8000
 ## Environment variable
 
 `VITE_API_BASE` is an empty string in Compose so the browser uses the
-same-origin `/api` path proxied by nginx. Set it to a remote URL later
-for a Vercel-hosted static build pointing at a Cloud Run API.
+same-origin `/api` path proxied by nginx. For a separately hosted frontend,
+set it to the Render backend URL at build time and add the frontend origin to
+the backend's `CORS_ORIGINS`. See the root `deployment.md` for limitations
+that must be addressed before exposing personal photos on the public internet.
 
 ## ONNX Runtime Web — intentionally excluded
 

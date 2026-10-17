@@ -1,4 +1,7 @@
 # Frontend tooling
+node_modules/
+frontend/node_modules/
+frontend/dist/
 apps/frontend/node_modules/
 apps/frontend/dist/
 
@@ -41,6 +44,8 @@ htmlcov/
 .python-version.local
 
 # Operating-system/editor noise and logs
+.vscode/
+.idea/
 .DS_Store
 Thumbs.db
 *.log

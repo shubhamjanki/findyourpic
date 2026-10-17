@@ -16,8 +16,12 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     import uvicorn
 
-    print(f"Local Face Search UI: http://{args.host}:{args.port}")
-    uvicorn.run("apps.backend.app:app", host=args.host, port=args.port, log_level="info")
+    try:
+        import backend.app
+        target = "backend.app:app"
+    except ImportError:
+        target = "apps.backend.app:app"
+    uvicorn.run(target, host=args.host, port=args.port, log_level="info")
 
 
 if __name__ == "__main__":

@@ -1,9 +1,44 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { downloadZip, faceUrl, imageUrl, requestJson } from "./api.js";
+import LazyImage from "./LazyImage.jsx";
 
 function Notice({ message, kind }) {
   if (!message) return null;
   return <div className={`notice ${kind || "info"}`} role="status">{message}</div>;
+}
+
+function formatTimeRemaining(seconds) {
+  const remaining = Math.max(1, Math.ceil(seconds));
+  if (remaining < 60) return `About ${remaining}s left`;
+  const minutes = Math.floor(remaining / 60);
+  const hours = Math.floor(minutes / 60);
+  if (hours) return `About ${hours}h ${minutes % 60}m left`;
+  return `About ${minutes}m left`;
+}
+
+function IndexProgress({ progress }) {
+  const { phase, completed, total, phaseStartedAt } = progress;
+  const phaseName = phase === "indexing" ? "Indexing faces" : "Checking photo files";
+  const percentage = total > 0 ? Math.floor((completed / total) * 100) : 0;
+  const elapsedSeconds = (Date.now() - phaseStartedAt) / 1000;
+  const remaining = completed >= 2 && completed < total
+    ? formatTimeRemaining((elapsedSeconds / completed) * (total - completed))
+    : "Estimating time left";
+
+  return (
+    <div className="index-progress" role="status" aria-live="polite" aria-busy="true">
+      <div className="index-progress-heading">
+        <span>{phaseName}{total > 0 ? `: ${completed} of ${total} (${percentage}%)` : "…"}</span>
+        <span>{remaining}</span>
+      </div>
+      <progress
+        className="index-progress-bar"
+        max={total > 0 ? total : 1}
+        value={total > 0 ? completed : undefined}
+        aria-label={`${phaseName} progress`}
+      />
+    </div>
+  );
 }
 
 function fileBase(path) {
@@ -106,11 +141,15 @@ export default function App() {
   const [textQuery, setTextQuery] = useState("");
   const [homeMessage, setHomeMessage] = useState(null);
   const [indexMessage, setIndexMessage] = useState(null);
+  const [indexProgress, setIndexProgress] = useState(null);
   const [galleryMessage, setGalleryMessage] = useState(null);
   const [viewerMessage, setViewerMessage] = useState(null);
   const [photos, setPhotos] = useState([]);
   const [photoTotal, setPhotoTotal] = useState(0);
   const [photoPage, setPhotoPage] = useState(0);
+  const [photoSource, setPhotoSource] = useState("local");
+  const [s3NextToken, setS3NextToken] = useState(null);
+  const [s3HasMore, setS3HasMore] = useState(false);
   const [photoQuery, setPhotoQuery] = useState("");
   const [photoFilter, setPhotoFilter] = useState("all");
   const [photoSort, setPhotoSort] = useState("newest");
@@ -216,6 +255,40 @@ export default function App() {
     }
   }, [photoFilter, photoPage, photoQuery, photoSort, photoTotal, photos.length]);
 
+  const loadS3Photos = useCallback(async ({ reset = false } = {}) => {
+    if (photoLoadingRef.current && !reset) return;
+    if (!reset && !s3HasMore) return;
+    if (reset) {
+      photoRequest.current += 1;
+      setPhotos([]);
+      setPhotoTotal(0);
+      setS3NextToken(null);
+      setS3HasMore(true);
+    }
+    photoLoadingRef.current = true;
+    setPhotoLoading(true);
+    const requestId = ++photoRequest.current;
+    const startAfter = reset ? null : s3NextToken;
+    const tokenQuery = startAfter ? `&start_after=${encodeURIComponent(startAfter)}` : "";
+    try {
+      const result = await requestJson(`/api/s3/photos?page_size=24${tokenQuery}`);
+      if (requestId !== photoRequest.current) return;
+      const nextToken = result.next_token || null;
+      setPhotos((current) => (reset ? result.photos : [...current, ...result.photos]));
+      setPhotoTotal((current) => (reset ? result.photos.length : current + result.photos.length));
+      setS3NextToken(nextToken);
+      setS3HasMore(Boolean(nextToken));
+    } catch (error) {
+      if (requestId !== photoRequest.current) return;
+      setGalleryMessage({ text: error.message, kind: "error" });
+    } finally {
+      if (requestId === photoRequest.current) {
+        photoLoadingRef.current = false;
+        setPhotoLoading(false);
+      }
+    }
+  }, [s3HasMore, s3NextToken]);
+
   const loadPeople = useCallback(async ({ reset = false, query = peopleQuery } = {}) => {
     if (peopleLoadingRef.current && !reset) return;
     if (!reset && people.length >= peopleTotal && peopleTotal > 0) return;
@@ -252,11 +325,24 @@ export default function App() {
 
   const openAll = async (query = "", kind = photoFilter) => {
     setGalleryPerson(null);
+    setPhotoSource("local");
     setSelected(new Set());
     setReturnScreen("all");
     setGalleryMessage(null);
     goScreen("all");
     await loadPhotos({ reset: true, query, kind, sort: photoSort });
+  };
+
+  const openS3Gallery = async () => {
+    setGalleryPerson(null);
+    setPhotoSource("s3");
+    setPhotoQuery("");
+    setPhotoFilter("all");
+    setSelected(new Set());
+    setReturnScreen("all");
+    setGalleryMessage(null);
+    goScreen("all");
+    await loadS3Photos({ reset: true });
   };
 
   const openCollection = async () => {
@@ -268,6 +354,7 @@ export default function App() {
 
   const openPersonGallery = (person) => {
     setGalleryPerson(person);
+    setPhotoSource("local");
     setSelected(new Set());
     setPhotos(person.photos.map((photo) => ({ ...photo, faces: 1 })));
     setPhotoTotal(person.photos.length);
@@ -307,13 +394,15 @@ export default function App() {
     const node = loadMoreRef.current;
     if (!node) return undefined;
     const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting) && !photoLoadingRef.current && photos.length < photoTotal) {
-        loadPhotos();
+      const hasMore = photoSource === "s3" ? s3HasMore : photos.length < photoTotal;
+      if (entries.some((entry) => entry.isIntersecting) && !photoLoadingRef.current && hasMore) {
+        if (photoSource === "s3") loadS3Photos();
+        else loadPhotos();
       }
     }, { rootMargin: "320px 0px" });
     observer.observe(node);
     return () => observer.disconnect();
-  }, [galleryPerson, loadPhotos, photoTotal, photos.length, screen]);
+  }, [galleryPerson, loadPhotos, loadS3Photos, photoSource, photoTotal, photos.length, s3HasMore, screen]);
 
   useEffect(() => {
     if (screen !== "collection") return undefined;
@@ -477,12 +566,32 @@ export default function App() {
     if (indexBusy) return;
     setIndexBusy(true);
     setIndexMessage(null);
+    setIndexProgress({ phase: "checking", completed: 0, total: 0, phaseStartedAt: Date.now() });
     try {
-      const result = await requestJson("/api/index", {
+      const { job_id: jobId } = await requestJson("/api/index/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ backend, workers: Number(workers) }),
       });
+      let previousPhase = null;
+      let phaseStartedAt = Date.now();
+      let result;
+      while (!result) {
+        const status = await requestJson(`/api/index/status/${encodeURIComponent(jobId)}`);
+        if (status.phase !== previousPhase) {
+          previousPhase = status.phase;
+          phaseStartedAt = Date.now();
+        }
+        setIndexProgress({
+          phase: status.phase,
+          completed: status.completed,
+          total: status.total,
+          phaseStartedAt,
+        });
+        if (status.status === "failed") throw new Error(status.error || "Indexing failed.");
+        if (status.status === "completed") result = status;
+        else await new Promise((resolve) => window.setTimeout(resolve, 750));
+      }
       const report = result.report;
       setIndexMessage({
         text: `Scanned ${report.scanned}; indexed ${report.indexed} files and ${report.face_count} faces; skipped ${report.skipped}, removed ${report.removed}, failed ${report.failed}.`,
@@ -494,6 +603,7 @@ export default function App() {
       setIndexMessage({ text: error.message, kind: "error" });
     } finally {
       setIndexBusy(false);
+      setIndexProgress(null);
     }
   };
 
@@ -509,7 +619,7 @@ export default function App() {
 
   const saveFeedback = async (value) => {
     const photo = viewerPhotos[viewerIndex];
-    if (!photo) return;
+    if (!photo || photo.source === "s3") return;
     const oldValue = feedback[photo.path] || null;
     const nextValue = oldValue === value ? null : value;
     setFeedback((current) => {
@@ -541,7 +651,7 @@ export default function App() {
 
   const deleteCurrentPhoto = async () => {
     const photo = viewerPhotos[viewerIndex];
-    if (!photo) return;
+    if (!photo || photo.source === "s3") return;
     if (!window.confirm(`Delete this photo from your collection?\n\n${photo.path}\n\nThis action cannot be undone.`)) return;
     try {
       const result = await requestJson("/api/delete-photo", {
@@ -649,14 +759,17 @@ export default function App() {
   useEffect(() => () => stopCamera(), []);
 
   const allLabels = useMemo(() => ({
+    s3: "Images loaded from your S3 bucket. Scroll to fetch more.",
     all: photoQuery ? `Photos matching “${photoQuery}”.` : "Every photo in your collection, in one place.",
     liked: "Photos you liked.",
     disliked: "Photos you disliked.",
     deleted: "Photos in the recycle bin.",
   }), [photoQuery]);
 
-  const emptyPhotos = photoQuery
-    ? "No indexed photo paths matched. Try another name, place, or moment."
+  const emptyPhotos = photoSource === "s3"
+    ? "No supported image files were found in the configured S3 bucket."
+    : photoQuery
+      ? "No indexed photo paths matched. Try another name, place, or moment."
     : photoFilter === "liked"
       ? "No liked photos yet. Tap the heart on a photo to save it here."
       : photoFilter === "disliked"
@@ -673,6 +786,7 @@ export default function App() {
       return next;
     });
   };
+  const hasMorePhotos = photoSource === "s3" ? s3HasMore : photos.length < photoTotal;
 
   return (
     <>
@@ -740,24 +854,57 @@ export default function App() {
             <button className="back-link" type="button" onClick={goBack}><i className="ph ph-arrow-left" aria-hidden="true"></i> {galleryPerson ? "Collection" : "Home"}</button>
             <div className="heading-title">
               <div className="eyebrow">The whole story</div>
-              <h1><span>{galleryPerson ? galleryPerson.name : "All photos"}</span> <span className="heading-count">({photoTotal.toLocaleString()})</span></h1>
-              <p>{galleryPerson ? `Photos grouped with ${galleryPerson.name}. Select any number to download.` : (allLabels[photoFilter] || allLabels.all)}</p>
+              <h1>
+                <span>{galleryPerson ? galleryPerson.name : "All photos"}</span>{" "}
+                <span className="heading-count">
+                  ({photoSource === "s3" ? `${photos.length}${s3HasMore ? "+" : ""}` : photoTotal.toLocaleString()})
+                </span>
+              </h1>
+              <p>{galleryPerson
+                ? `Photos grouped with ${galleryPerson.name}. Select any number to download.`
+                : (allLabels[photoSource === "s3" ? "s3" : photoFilter] || allLabels.all)}</p>
             </div>
-            {galleryPerson ? null : <button className="small-button" type="button" aria-label="Refresh photos" onClick={() => loadPhotos({ reset: true })}><i className="ph ph-arrows-clockwise" aria-hidden="true"></i></button>}
+            {galleryPerson ? null : <button
+              className="small-button"
+              type="button"
+              aria-label="Refresh photos"
+              onClick={() => photoSource === "s3" ? loadS3Photos({ reset: true }) : loadPhotos({ reset: true })}
+            ><i className="ph ph-arrows-clockwise" aria-hidden="true"></i></button>}
           </div>
-          {photoLoading && photos.length === 0 ? <div className="loading-panel"><span className="spinner"></span><span>Gathering your photos…</span></div> : null}
+          {photoLoading && photos.length === 0 ? (
+            <div className="photo-grid skeleton-grid" aria-busy="true" aria-label="Gathering your photos">
+              {Array.from({ length: 12 }).map((_, index) => (
+                <div
+                  key={`skeleton-photo-${index}`}
+                  className="photo-tile-skeleton skeleton skeleton-shimmer"
+                  style={{ animationDelay: `${(index % 6) * 100}ms` }}
+                />
+              ))}
+            </div>
+          ) : null}
           {galleryPerson ? null : (
             <div className="photo-filters">
-              {["all", "liked", "disliked", "deleted"].map((kind) => (
-                <button key={kind} className={`filter-button${photoFilter === kind ? " active" : ""}`} type="button" onClick={() => { setPhotoFilter(kind); loadPhotos({ reset: true, query: photoQuery, kind, sort: photoSort }); }}>{kind === "deleted" ? "Trash" : kind[0].toUpperCase() + kind.slice(1)}</button>
-              ))}
-              <label className="photo-sort">
-                <span>Sort</span>
-                <select value={photoSort} onChange={(event) => { const sort = event.target.value; setPhotoSort(sort); loadPhotos({ reset: true, query: photoQuery, kind: photoFilter, sort }); }}>
-                  <option value="newest">Newest</option>
-                  <option value="name">Name</option>
-                </select>
-              </label>
+              <button
+                className={`filter-button${photoSource === "s3" ? " active" : ""}`}
+                type="button"
+                onClick={() => photoSource === "s3" ? openAll("", "all") : openS3Gallery()}
+              >
+                {photoSource === "s3" ? "Back to local photos" : "Browse S3 bucket"}
+              </button>
+              {photoSource === "local" ? (
+                <>
+                  {["all", "liked", "disliked", "deleted"].map((kind) => (
+                    <button key={kind} className={`filter-button${photoFilter === kind ? " active" : ""}`} type="button" onClick={() => { setPhotoFilter(kind); loadPhotos({ reset: true, query: photoQuery, kind, sort: photoSort }); }}>{kind === "deleted" ? "Trash" : kind[0].toUpperCase() + kind.slice(1)}</button>
+                  ))}
+                  <label className="photo-sort">
+                    <span>Sort</span>
+                    <select value={photoSort} onChange={(event) => { const sort = event.target.value; setPhotoSort(sort); loadPhotos({ reset: true, query: photoQuery, kind: photoFilter, sort }); }}>
+                      <option value="newest">Newest</option>
+                      <option value="name">Name</option>
+                    </select>
+                  </label>
+                </>
+              ) : null}
             </div>
           )}
           {galleryPerson ? (
@@ -777,7 +924,7 @@ export default function App() {
               galleryPerson ? (
                 <div key={photo.path} className={`photo-tile selectable${selected.has(photo.path) ? " selected" : ""}`}>
                   <button className="photo-tile-open" type="button" aria-label="Open photo" onClick={() => openViewer(photos, photos.findIndex((item) => item.path === photo.path), "all", galleryPerson.name)}>
-                    <img loading="lazy" src={imageUrl(photo.path)} alt="" />
+                    <LazyImage src={imageUrl(photo.path, photo.source)} alt="" />
                     {photo.faces ? <span className="photo-count-badge">{photo.faces} face{photo.faces === 1 ? "" : "s"}</span> : null}
                   </button>
                   <label className="photo-select">
@@ -787,11 +934,20 @@ export default function App() {
                 </div>
               ) : (
                 <button key={photo.path} className="photo-tile" type="button" aria-label="Open photo" onClick={() => openViewer(photos, photos.findIndex((item) => item.path === photo.path), "all", collectionName)}>
-                  <img loading="lazy" src={imageUrl(photo.path)} alt="" />
+                  <LazyImage src={imageUrl(photo.path, photo.source)} alt="" />
                   {photo.faces ? <span className="photo-count-badge">{photo.faces} face{photo.faces === 1 ? "" : "s"}</span> : null}
                 </button>
               )
             ))}
+            {photoLoading && photos.length > 0 ? (
+              Array.from({ length: 4 }).map((_, index) => (
+                <div
+                  key={`skeleton-more-${index}`}
+                  className="photo-tile-skeleton skeleton skeleton-shimmer"
+                  style={{ animationDelay: `${(index % 4) * 100}ms` }}
+                />
+              ))
+            ) : null}
           </div>
           {photos.length === 0 && !photoLoading ? (
             <div className="empty-panel">
@@ -800,11 +956,11 @@ export default function App() {
               <span>{emptyPhotos}</span>
             </div>
           ) : null}
-          <div ref={loadMoreRef} className={`loading-panel${galleryPerson || photos.length >= photoTotal ? " hidden" : ""}`}>
+          <div ref={loadMoreRef} className={`loading-panel${galleryPerson || !hasMorePhotos ? " hidden" : ""}`}>
             <span className={`spinner${photoLoading ? "" : " hidden"}`}></span>
             <span>{photoLoading ? "Loading more photos…" : "Scroll to load more"}</span>
           </div>
-          {photos.length > 0 && photos.length >= photoTotal ? <div className="end-of-photos">You’ve reached the end.</div> : null}
+          {photos.length > 0 && !hasMorePhotos ? <div className="end-of-photos">You’ve reached the end.</div> : null}
         </section>
 
         <section className={`screen content-screen${screen === "collection" ? "" : " hidden"}`}>
@@ -836,7 +992,7 @@ export default function App() {
                 <summary><i className="ph ph-gear-six" aria-hidden="true"></i> Index settings</summary>
                 <div className="index-settings-popover">
                   <label>Index database<input type="text" value={config.database} readOnly /></label>
-                  <label>Photo folder<input type="text" value={config.collection} readOnly /></label>
+                  <label>Images folder<input type="text" value={config.collection} readOnly /></label>
                   <div className="settings-inline">
                     <label>Backend
                       <select value={backend} onChange={(event) => setBackend(event.target.value)}>
@@ -855,15 +1011,28 @@ export default function App() {
               <button className="button button-green" type="button" disabled={indexBusy} onClick={updateIndex}><i className="ph ph-arrows-clockwise" aria-hidden="true"></i> Update index</button>
             </div>
           </div>
-          {indexBusy ? <div className="index-progress" role="status"><span className="spinner"></span> Updating your index. This may take a while…</div> : null}
+          {indexBusy && indexProgress ? <IndexProgress progress={indexProgress} /> : null}
           <Notice message={indexMessage?.text} kind={indexMessage?.kind} />
-          {peopleLoading && people.length === 0 ? <div className="loading-panel"><span className="spinner"></span><span>Finding familiar faces…</span></div> : null}
+          {peopleLoading && people.length === 0 ? (
+            <div className="people-grid skeleton-grid" aria-busy="true" aria-label="Finding familiar faces">
+              {Array.from({ length: 8 }).map((_, index) => (
+                <div key={`skeleton-person-${index}`} className="person-card-skeleton">
+                  <div
+                    className="person-avatar-skeleton skeleton skeleton-shimmer"
+                    style={{ animationDelay: `${(index % 4) * 120}ms` }}
+                  />
+                  <div className="person-name-skeleton skeleton skeleton-shimmer" />
+                  <div className="person-count-skeleton skeleton skeleton-shimmer" />
+                </div>
+              ))}
+            </div>
+          ) : null}
           <div className={`people-grid${people.length ? "" : " hidden"}`}>
             {people.map((person) => (
               <article className="person-card" key={person.key}>
                 <button className="person-open" type="button" aria-label={`Browse photos of ${person.name}`} onClick={() => openPersonGallery(person)}>
                   <span className="person-avatar">
-                    <img loading="lazy" src={faceUrl(person.preview)} alt="" />
+                    <LazyImage src={faceUrl(person.preview)} alt="" isAvatar />
                   </span>
                 </button>
                 <div className="person-label">
@@ -875,6 +1044,18 @@ export default function App() {
                 <span className="person-count">{person.count} photo{person.count === 1 ? "" : "s"}</span>
               </article>
             ))}
+            {peopleLoading && people.length > 0 ? (
+              Array.from({ length: 4 }).map((_, index) => (
+                <div key={`skeleton-more-person-${index}`} className="person-card-skeleton">
+                  <div
+                    className="person-avatar-skeleton skeleton skeleton-shimmer"
+                    style={{ animationDelay: `${(index % 4) * 120}ms` }}
+                  />
+                  <div className="person-name-skeleton skeleton skeleton-shimmer" />
+                  <div className="person-count-skeleton skeleton skeleton-shimmer" />
+                </div>
+              ))
+            ) : null}
           </div>
           <div ref={peopleMoreRef} className={`loading-panel${people.length >= peopleTotal ? " hidden" : ""}`}>
             <span className={`spinner${peopleLoading ? "" : " hidden"}`}></span>
@@ -893,31 +1074,35 @@ export default function App() {
         <section className={`screen viewer-screen${screen === "viewer" ? "" : " hidden"}`}>
           <div className="viewer-top">
             <button className="back-link" type="button" onClick={goBack}><i className="ph ph-arrow-left" aria-hidden="true"></i> Back</button>
-            <div className="viewer-title-edit">
-              <input
-                type="text"
-                maxLength={80}
-                value={collectionName}
-                readOnly={titleReadOnly}
-                aria-label="Editable collection title"
-                onChange={(event) => setCollectionName(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    setTitleReadOnly(true);
-                    saveCollectionName(event.currentTarget.value);
-                  }
-                  if (event.key === "Escape") {
-                    setTitleReadOnly(true);
-                    loadTitle();
-                  }
-                }}
-              />
-              <button className="icon-button" type="button" aria-label="Edit collection title" onClick={() => {
-                if (!titleReadOnly) saveCollectionName(collectionName);
-                setTitleReadOnly((value) => !value);
-              }}><i className={`ph ${titleReadOnly ? "ph-pencil-simple" : "ph-check"}`} aria-hidden="true"></i></button>
-            </div>
+            {photoSource === "s3" ? (
+              <div className="viewer-title-edit"><span>S3 bucket</span></div>
+            ) : (
+              <div className="viewer-title-edit">
+                <input
+                  type="text"
+                  maxLength={80}
+                  value={collectionName}
+                  readOnly={titleReadOnly}
+                  aria-label="Editable collection title"
+                  onChange={(event) => setCollectionName(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      setTitleReadOnly(true);
+                      saveCollectionName(event.currentTarget.value);
+                    }
+                    if (event.key === "Escape") {
+                      setTitleReadOnly(true);
+                      loadTitle();
+                    }
+                  }}
+                />
+                <button className="icon-button" type="button" aria-label="Edit collection title" onClick={() => {
+                  if (!titleReadOnly) saveCollectionName(collectionName);
+                  setTitleReadOnly((value) => !value);
+                }}><i className={`ph ${titleReadOnly ? "ph-pencil-simple" : "ph-check"}`} aria-hidden="true"></i></button>
+              </div>
+            )}
             <span className="viewer-position">{viewerPhotos.length ? `${viewerIndex + 1} / ${viewerPhotos.length}` : ""}</span>
           </div>
           <div
@@ -932,13 +1117,14 @@ export default function App() {
             }}
           >
             <button className="stack-card stack-left" type="button" aria-label="Previous photo" disabled={!hasNeighbors} onClick={() => stepViewer(-1)}>
-              {previousPhoto ? <img alt="" src={imageUrl(previousPhoto.path)} /> : null}
+              {previousPhoto ? <LazyImage src={imageUrl(previousPhoto.path, previousPhoto.source)} alt="" /> : null}
             </button>
             <button className="viewer-arrow viewer-arrow-left" type="button" aria-label="Previous photo" disabled={!hasNeighbors} onClick={() => stepViewer(-1)}><i className="ph ph-caret-left" aria-hidden="true"></i></button>
             <div
               className="main-photo-wrap"
-              onDoubleClick={() => saveFeedback("like")}
+              onDoubleClick={() => { if (currentPhoto?.source !== "s3") saveFeedback("like"); }}
               onTouchEnd={(event) => {
+                if (currentPhoto?.source === "s3") return;
                 const now = Date.now();
                 if (now - lastTap.current < 320) {
                   event.preventDefault();
@@ -947,12 +1133,22 @@ export default function App() {
                 lastTap.current = now;
               }}
             >
-              {currentPhoto ? <img id="main-photo" alt={fileBase(currentPhoto.path)} draggable="false" src={imageUrl(currentPhoto.path)} /> : null}
+              {currentPhoto ? (
+                <LazyImage
+                  key={currentPhoto.path}
+                  id="main-photo"
+                  alt={fileBase(currentPhoto.path)}
+                  draggable="false"
+                  src={imageUrl(currentPhoto.path, currentPhoto.source)}
+                  eager
+                  stage
+                />
+              ) : null}
               <span className={`like-heart${showHeart ? "" : " hidden"}`} aria-hidden="true"><i className="ph-fill ph-heart"></i></span>
             </div>
             <button className="viewer-arrow viewer-arrow-right" type="button" aria-label="Next photo" disabled={!hasNeighbors} onClick={() => stepViewer(1)}><i className="ph ph-caret-right" aria-hidden="true"></i></button>
             <button className="stack-card stack-right" type="button" aria-label="Next photo" disabled={!hasNeighbors} onClick={() => stepViewer(1)}>
-              {nextPhoto ? <img alt="" src={imageUrl(nextPhoto.path)} /> : null}
+              {nextPhoto ? <LazyImage src={imageUrl(nextPhoto.path, nextPhoto.source)} alt="" /> : null}
             </button>
           </div>
           <div className="viewer-caption">
@@ -965,22 +1161,28 @@ export default function App() {
               <button className="download-button" type="button" onClick={() => {
                 if (!currentPhoto) return;
                 const link = document.createElement("a");
-                link.href = imageUrl(currentPhoto.path);
+                link.href = imageUrl(currentPhoto.path, currentPhoto.source);
                 link.download = fileBase(currentPhoto.path) || "photo";
                 document.body.appendChild(link);
                 link.click();
                 link.remove();
               }}><i className="ph ph-download-simple" aria-hidden="true"></i> Download</button>
-              <button className="delete-button" type="button" onClick={deleteCurrentPhoto}><i className="ph ph-trash" aria-hidden="true"></i> Delete</button>
-              <span className="doubletap-hint">Double tap to like</span>
+              {currentPhoto?.source === "s3" ? null : (
+                <>
+                  <button className="delete-button" type="button" onClick={deleteCurrentPhoto}><i className="ph ph-trash" aria-hidden="true"></i> Delete</button>
+                  <span className="doubletap-hint">Double tap to like</span>
+                </>
+              )}
             </div>
           </div>
           <Notice message={viewerMessage?.text} kind={viewerMessage?.kind} />
-          <div className="feedback-row" aria-label="Photo feedback">
-            <button className={`feedback-button${feedback[currentPhoto?.path] === "down" ? " active" : ""}`} type="button" aria-label="Thumbs down" onClick={() => saveFeedback("down")}><i className="ph ph-thumbs-down" aria-hidden="true"></i></button>
-            <button className="feedback-button like-button" type="button" aria-label="Like photo" onClick={() => saveFeedback("like")}><i className="ph ph-heart" aria-hidden="true"></i></button>
-            <button className={`feedback-button${feedback[currentPhoto?.path] === "up" ? " active" : ""}`} type="button" aria-label="Thumbs up" onClick={() => saveFeedback("up")}><i className="ph ph-thumbs-up" aria-hidden="true"></i></button>
-          </div>
+          {currentPhoto?.source === "s3" ? null : (
+            <div className="feedback-row" aria-label="Photo feedback">
+              <button className={`feedback-button${feedback[currentPhoto?.path] === "down" ? " active" : ""}`} type="button" aria-label="Thumbs down" onClick={() => saveFeedback("down")}><i className="ph ph-thumbs-down" aria-hidden="true"></i></button>
+              <button className="feedback-button like-button" type="button" aria-label="Like photo" onClick={() => saveFeedback("like")}><i className="ph ph-heart" aria-hidden="true"></i></button>
+              <button className={`feedback-button${feedback[currentPhoto?.path] === "up" ? " active" : ""}`} type="button" aria-label="Thumbs up" onClick={() => saveFeedback("up")}><i className="ph ph-thumbs-up" aria-hidden="true"></i></button>
+            </div>
+          )}
           <div className="viewer-hint">Swipe or use the arrows to browse</div>
         </section>
       </main>
@@ -1016,7 +1218,7 @@ export default function App() {
       </div>
       <div className={`photo-preview-modal${previewOpen ? "" : " hidden"}`} role="dialog" aria-modal="true" onClick={(event) => { if (event.target === event.currentTarget) setPreviewOpen(false); }}>
         <button className="photo-preview-close" type="button" aria-label="Close photo preview" onClick={() => setPreviewOpen(false)}><i className="ph ph-x" aria-hidden="true"></i></button>
-        {currentPhoto ? <img alt={fileBase(currentPhoto.path)} src={imageUrl(currentPhoto.path)} /> : null}
+        {currentPhoto ? <LazyImage alt={fileBase(currentPhoto.path)} src={imageUrl(currentPhoto.path, currentPhoto.source)} eager stage /> : null}
       </div>
       <div className={`search-overlay${searchOverlay ? "" : " hidden"}`} role="status" aria-live="polite">
         <div className="search-overlay-card">

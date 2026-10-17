@@ -1,11 +1,12 @@
 FROM node:20-alpine AS build
 WORKDIR /web
-COPY apps/frontend/package.json ./
+COPY package.json package-lock.json* ./
 RUN npm install
-COPY apps/frontend ./
+COPY . ./
 RUN npm run build
 
 FROM nginx:1.27-alpine
-COPY apps/frontend/nginx.conf /etc/nginx/conf.d/default.conf
+COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /web/dist /usr/share/nginx/html
 EXPOSE 80
+

@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <meta name="color-scheme" content="dark">
+  <title>Find Your Pic: search your photos by person, place, or moment</title>
+  <meta name="description" content="Search your photo collection by person, place, or moment. Everything is compared on your own device, so your photos stay yours.">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Find Your Pic">
+  <meta property="og:description" content="Search your photo collection by person, place, or moment. Your photos never leave your device.">
+  <meta name="twitter:card" content="summary">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23C6F432'/%3E%3Ctext x='32' y='44' font-size='36' font-family='sans-serif' font-weight='700' text-anchor='middle' fill='black'%3Ef.%3C/text%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css">
+  <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/fill/style.css">
+  <link rel="stylesheet" href="/assets/app.css">
+  <script>document.documentElement.classList.add('js');</script>
+</head><body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="topbar">
+    <button class="wordmark" data-screen="home" aria-label="Find Your Pic home">
+      <span class="wordmark-icon">f.</span><span>Find Your Pic</span>
+    </button>
+    <div class="privacy"><span></span> Your photos stay yours</div>
+    <button class="icon-button top-home hidden" id="back-button" aria-label="Go back"><i class="ph ph-arrow-left" aria-hidden="true"></i></button>
+  </header>
+
+  <main id="main" tabindex="-1">
+    <section class="screen home-screen" id="screen-home">
+      <div class="home-copy" data-reveal>
+        <h1>Find Your Pic</h1>
+        <p>Search by person, place, or moment.</p>
+      </div>
+      <form class="searchbar" id="text-search-form" data-reveal style="--d:100ms">
+        <span class="search-glyph" aria-hidden="true"><i class="ph ph-magnifying-glass"></i></span>
+        <input id="text-search" type="search" placeholder="Name, place, or moment" autocomplete="off" aria-label="Search your photos">
+        <button type="submit" aria-label="Search"><i class="ph ph-arrow-right" aria-hidden="true"></i></button>
+      </form>
+      <div class="photo-actions" data-reveal style="--d:150ms">
+        <button class="photo-action" id="open-camera">
+          <span class="action-icon camera-icon" aria-hidden="true"><i class="ph ph-camera"></i></span>
+          <span><strong>Camera</strong><small>Take a photo</small></span>
+        </button>
+        <button class="photo-action" id="upload-trigger">
+          <span class="action-icon upload-icon" aria-hidden="true"><i class="ph ph-upload-simple"></i></span>
+          <span><strong>Upload</strong><small>Choose a photo</small></span>
+        </button>
+        <input id="photo-upload" type="file" accept="image/jpeg,image/png,image/webp,image/bmp" multiple hidden>
+      </div>
+      <section class="home-folders" aria-labelledby="home-folders-title" data-reveal style="--d:200ms">
+        <h2 id="home-folders-title">Your folders</h2>
+        <div class="home-folder-grid">
+          <button class="home-folder-button" type="button" data-open-photo-filter="liked">
+            <span class="home-folder-icon" aria-hidden="true"><i class="ph-fill ph-heart"></i></span>
+            <span>Liked</span>
+          </button>
+          <button class="home-folder-button" type="button" data-open-photo-filter="disliked">
+            <span class="home-folder-icon" aria-hidden="true"><i class="ph ph-thumbs-down"></i></span>
+            <span>Disliked</span>
+          </button>
+          <button class="home-folder-button" type="button" data-open-photo-filter="deleted">
+            <span class="home-folder-icon" aria-hidden="true"><i class="ph ph-trash"></i></span>
+            <span>Trash</span>
+          </button>
+        </div>
+      </section>
+      <details class="search-settings" data-reveal style="--d:250ms">
+        <summary><i class="ph ph-sliders-horizontal" aria-hidden="true"></i> Search settings</summary>
+        <div class="settings-inline">
+          <label>Similarity <output id="threshold-value">0.45</output>
+            <input id="threshold" type="range" min="0" max="1" value="0.45" step="0.01">
+          </label>
+          <label>Maximum matches
+            <input id="top-n" type="number" min="1" max="1000" value="50">
+          </label>
+        </div>
+      </details>
+      <div class="notice hidden" id="home-message" role="status"></div>
+
+      <section class="tagline" aria-label="About Find Your Pic">
+        <p class="tagline-text" data-word-reveal>Search every photo by the people and places in it. Nothing is uploaded and nothing leaves this device, so finding the right one stays private.</p>
+      </section>
+
+      <div class="home-note"><i class="ph ph-lock-simple tiny-lock" aria-hidden="true"></i> Your photos stay on this device</div>
+    </section>
+
+    <section class="screen content-screen hidden" id="screen-all">
+      <div class="screen-heading">
+        <button class="back-link" id="all-back"><i class="ph ph-arrow-left" aria-hidden="true"></i> Home</button>
+        <div class="heading-title">
+          <div class="eyebrow">The whole story</div>
+          <h1><span id="all-title">All photos</span> <span class="heading-count" id="all-count"></span></h1>
+          <p id="all-subtitle">Every photo in your collection, in one place.</p>
+        </div>
+        <button class="small-button" id="all-refresh" aria-label="Refresh photos"><i class="ph ph-arrows-clockwise" aria-hidden="true"></i></button>
+      </div>
+      <div class="loading-panel hidden" id="all-loading"><span class="spinner"></span><span>Gathering your photosâ€¦</span></div>
+      <div class="photo-filters" id="photo-filters">
+        <button class="filter-button active" data-photo-filter="all" type="button">All</button>
+        <button class="filter-button" data-photo-filter="liked" type="button">Liked</button>
+        <button class="filter-button" data-photo-filter="disliked" type="button">Disliked</button>
+        <button class="filter-button" data-photo-filter="deleted" type="button">Trash</button>
+        <label class="photo-sort">
+          <span>Sort</span>
+          <select id="photo-sort">
+            <option value="newest">Newest</option>
+            <option value="name">Name</option>
+          </select>
+        </label>
+      </div>
+      <div class="selection-tools hidden" id="selection-tools">
+        <span id="selection-count" aria-live="polite">0 selected</span>
+        <div>
+          <button class="selection-button" id="select-all-photos" type="button">Select all</button>
+          <button class="selection-button" id="clear-photo-selection" type="button">Clear</button>
+          <button class="selection-button selection-download" id="download-selected" type="button" disabled>Save to folder</button>
+          <button class="selection-button selection-zip" id="download-selected-zip" type="button" disabled>Download ZIP</button>
+        </div>
+      </div>
+      <div class="notice hidden" id="gallery-message" role="status" aria-live="polite"></div>
+      <div class="photo-grid" id="photo-grid"></div>
+      <div class="empty-panel hidden" id="all-empty">
+        <i class="ph ph-images" aria-hidden="true"></i>
+        <strong>No photos yet</strong>
+        <span>Index a folder from Collection to get started.</span>
+      </div>
+      <div class="loading-panel hidden" id="all-loading-more" role="status" aria-live="polite">
+        <span class="spinner hidden" id="all-more-spinner"></span>
+        <span id="all-more-text">Scroll to load more</span>
+      </div>
+      <div class="end-of-photos hidden" id="all-end">Youâ€™ve reached the end.</div>
+    </section>
+
+    <section class="screen content-screen hidden" id="screen-collection">
+      <div class="screen-heading">
+        <button class="back-link" data-screen="home"><i class="ph ph-arrow-left" aria-hidden="true"></i> Home</button>
+        <div class="heading-title">
+          <div class="eyebrow">Your people</div>
+          <h1>Collection</h1>
+          <p id="people-subtitle">Faces found in your photos, brought together.</p>
+        </div>
+        <button class="small-button" id="people-refresh" aria-label="Refresh people"><i class="ph ph-arrows-clockwise" aria-hidden="true"></i></button>
+      </div>
+      <div class="collection-tools">
+        <div class="collection-name-wrap">
+          <label for="collection-name">Collection name</label>
+          <div class="editable-name">
+            <input id="collection-name" type="text" maxlength="80" aria-label="Editable collection name">
+            <button class="small-button" id="save-collection-name" aria-label="Save collection name"><i class="ph ph-check" aria-hidden="true"></i></button>
+          </div>
+        </div>
+        <div class="index-tools">
+          <details id="index-settings">
+            <summary><i class="ph ph-gear-six" aria-hidden="true"></i> Index settings</summary>
+            <div class="index-settings-popover">
+              <label for="database">Index database</label>
+              <input id="database" type="text">
+              <label for="collection-path">Photo folder</label>
+              <input id="collection-path" type="text">
+              <div class="settings-inline">
+                <label for="backend">Backend
+                  <select id="backend">
+                    <option value="insightface">InsightFace</option>
+                    <option value="dlib">dlib</option>
+                  </select>
+                </label>
+                <label for="workers">Workers
+                  <select id="workers"><option>1</option><option>2</option><option>4</option></select>
+                </label>
+              </div>
+            </div>
+          </details>
+          <button class="button button-green" id="index-button"><i class="ph ph-arrows-clockwise" aria-hidden="true"></i> Update index</button>
+        </div>
+      </div>
+      <div class="index-progress hidden" id="index-progress" role="status"><span class="spinner"></span> Updating your index. This may take a whileâ€¦</div>
+      <div class="notice hidden" id="index-message" role="status"></div>
+      <div class="loading-panel hidden" id="people-loading"><span class="spinner"></span><span>Finding familiar facesâ€¦</span></div>
+      <div class="people-grid" id="people-grid"></div>
+      <div class="loading-panel hidden" id="people-loading-more" role="status" aria-live="polite">
+        <span class="spinner hidden" id="people-more-spinner"></span>
+        <span id="people-more-text">Scroll to load more</span>
+      </div>
+      <div class="end-of-photos hidden" id="people-end">Youâ€™ve reached the end.</div>
+      <div class="empty-panel hidden" id="people-empty">
+        <i class="ph ph-users-three" aria-hidden="true"></i>
+        <strong>No faces indexed yet</strong>
+        <span>Update your index to build your collection.</span>
+      </div>
+    </section>
+
+    <section class="screen viewer-screen hidden" id="screen-viewer">
+      <div class="viewer-top">
+        <button class="back-link" id="viewer-back"><i class="ph ph-arrow-left" aria-hidden="true"></i> Back</button>
+        <div class="viewer-title-edit">
+          <input id="viewer-title" type="text" maxlength="80" aria-label="Editable collection title">
+          <button class="icon-button" id="edit-title" aria-label="Edit collection title"><i class="ph ph-pencil-simple" aria-hidden="true"></i></button>
+        </div>
+        <span class="viewer-position" id="viewer-position"></span>
+      </div>
+      <div class="viewer-stage" id="viewer-stage" aria-label="Photo viewer">
+        <button class="stack-card stack-left" id="viewer-previous" aria-label="Previous photo"><img alt=""></button>
+        <button class="viewer-arrow viewer-arrow-left" id="viewer-prev-arrow" aria-label="Previous photo"><i class="ph ph-caret-left" aria-hidden="true"></i></button>
+        <div class="main-photo-wrap" id="main-photo-wrap">
+          <div class="viewer-loading"><span class="spinner"></span></div>
+          <img id="main-photo" alt="Selected collection photo" draggable="false">
+          <span class="like-heart hidden" id="like-heart" aria-hidden="true"><i class="ph-fill ph-heart"></i></span>
+        </div>
+        <button class="viewer-arrow viewer-arrow-right" id="viewer-next-arrow" aria-label="Next photo"><i class="ph ph-caret-right" aria-hidden="true"></i></button>
+        <button class="stack-card stack-right" id="viewer-next" aria-label="Next photo"><img alt=""></button>
+      </div>
+      <div class="viewer-caption">
+        <div>
+          <div class="photo-filename" id="photo-filename"></div>
+          <div class="photo-subtitle" id="photo-subtitle"></div>
+        </div>
+        <div class="viewer-actions">
+          <button class="preview-button" id="preview-photo" type="button" aria-label="Preview current photo in full size"><i class="ph ph-eye" aria-hidden="true"></i> Preview</button>
+          <button class="download-button" id="download-photo" type="button" aria-label="Download current photo"><i class="ph ph-download-simple" aria-hidden="true"></i> Download</button>
+          <button class="delete-button" id="delete-photo" type="button" aria-label="Delete current photo"><i class="ph ph-trash" aria-hidden="true"></i> Delete</button>
+          <span class="doubletap-hint">Double tap to like</span>
+        </div>
+      </div>
+      <div class="notice hidden" id="viewer-message" role="status"></div>
+      <div class="feedback-row" aria-label="Photo feedback">
+        <button class="feedback-button" id="dislike-button" aria-label="Thumbs down" title="Not a favorite"><i class="ph ph-thumbs-down" aria-hidden="true"></i></button>
+        <button class="feedback-button like-button" id="like-button" aria-label="Like photo" title="Like photo"><i class="ph ph-heart" aria-hidden="true"></i></button>
+        <button class="feedback-button" id="approve-button" aria-label="Thumbs up" title="A favorite"><i class="ph ph-thumbs-up" aria-hidden="true"></i></button>
+      </div>
+      <div class="viewer-hint">Swipe or use the arrows to browse</div>
+    </section>
+  </main>
+
+  <nav class="bottom-nav" id="bottom-nav" aria-label="Main navigation">
+    <button class="nav-button" data-screen="collection"><i class="ph ph-users-three nav-icon" aria-hidden="true"></i><span>Collection</span></button>
+    <button class="nav-button" data-screen="all"><i class="ph ph-squares-four nav-icon" aria-hidden="true"></i><span>All</span></button>
+  </nav>
+
+  <div class="camera-modal hidden" id="camera-modal" role="dialog" aria-modal="true" aria-label="Take a photo">
+    <div class="camera-card">
+      <button class="camera-close" id="camera-close" aria-label="Close camera"><i class="ph ph-x" aria-hidden="true"></i></button>
+      <h2>Take a photo</h2>
+      <p>Find similar moments in your collection.</p>
+      <video id="camera-video" autoplay playsinline muted></video>
+      <div class="camera-fallback hidden" id="camera-fallback">Camera preview is unavailable.</div>
+      <button class="button button-green button-wide" id="capture-photo"><i class="ph ph-camera" aria-hidden="true"></i> Take photo</button>
+    </div>
+  </div>
+  <div class="camera-modal hidden" id="face-picker-modal" role="dialog" aria-modal="true" aria-labelledby="face-picker-title">
+    <div class="camera-card face-picker-card">
+      <button class="camera-close" id="face-picker-close" aria-label="Cancel face selection"><i class="ph ph-x" aria-hidden="true"></i></button>
+      <h2 id="face-picker-title">Which face should I look for?</h2>
+      <p>Choose one face from this reference photo.</p>
+      <div class="face-choice-list" id="face-choice-list"></div>
+    </div>
+  </div>
+  <div class="photo-preview-modal hidden" id="photo-preview-modal" role="dialog" aria-modal="true" aria-label="Full size photo preview">
+    <button class="photo-preview-close" id="photo-preview-close" type="button" aria-label="Close photo preview"><i class="ph ph-x" aria-hidden="true"></i></button>
+    <img id="photo-preview-image" alt="">
+  </div>
+  <div class="search-overlay hidden" id="search-overlay" role="status" aria-live="polite">
+    <div class="search-overlay-card">
+      <span class="spinner spinner-large"></span>
+      <strong id="search-overlay-title">Looking for your picâ€¦</strong>
+      <span id="search-overlay-detail">Your photo is being compared locally.</span>
+    </div>
+  </div>
+
+  <script>
+    /* Reveal motion. IntersectionObserver only, never a scroll listener. */
+    (function () {
+      var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+      /* Gentle fade up for [data-reveal] blocks */
+      var blocks = document.querySelectorAll('[data-reveal]');
+      if (reduce || !('IntersectionObserver' in window)) {
+        blocks.forEach(function (el) { el.classList.add('is-in'); });
+      } else {
+        var blockObserver = new IntersectionObserver(function (entries) {
+          entries.forEach(function (entry) {
+            if (entry.isIntersecting) {
+              entry.target.classList.add('is-in');
+              blockObserver.unobserve(entry.target);
+            }
+          });
+        }, { threshold: 0.1 });
+        blocks.forEach(function (el) { blockObserver.observe(el); });
+      }
+
+      /* Tagline: each word moves from muted to full colour as it crosses the trigger line */
+      var tagline = document.querySelector('[data-word-reveal]');
+      if (!tagline) return;
+      var words = tagline.textContent.trim().split(/\s+/);
+      tagline.setAttribute('aria-label', words.join(' '));
+      tagline.textContent = '';
+      var spans = words.map(function (word, i) {
+        var span = document.createElement('span');
+        span.className = 'word';
+        span.setAttribute('aria-hidden', 'true');
+        span.textContent = word;
+        tagline.appendChild(span);
+        if (i < words.length - 1) tagline.appendChild(document.createTextNode(' '));
+        return span;
+      });
+      if (reduce || !('IntersectionObserver' in window)) {
+        spans.forEach(function (s) { s.classList.add('on'); });
+        return;
+      }
+      var wordObserver = new IntersectionObserver(function (entries) {
+        entries
+          .filter(function (e) {
+            var top = e.rootBounds ? e.rootBounds.bottom : window.innerHeight;
+            return e.isIntersecting || e.boundingClientRect.top < top;
+          })
+          .sort(function (a, b) { return spans.indexOf(a.target) - spans.indexOf(b.target); })
+          .forEach(function (e, i) {
+            e.target.style.transitionDelay = (i * 40) + 'ms';
+            e.target.classList.add('on');
+            wordObserver.unobserve(e.target);
+          });
+      }, { rootMargin: '0px 0px -35% 0px', threshold: 0 });
+      spans.forEach(function (s) { wordObserver.observe(s); });
+    })();
+  </script>
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>

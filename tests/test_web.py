@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
+import time
 import zipfile
 from io import BytesIO
 from pathlib import Path
@@ -8,9 +10,13 @@ from pathlib import Path
 from PIL import Image
 from fastapi.testclient import TestClient
 
-from apps.backend.app import create_app
-from apps.backend.service import ensure_custom_tables
-from face_search.index import index_directory
+try:
+    from backend.app import create_app
+    from backend.service import ensure_custom_tables
+except ImportError:
+    from apps.backend.app import create_app
+    from apps.backend.service import ensure_custom_tables
+from face_search.index import IndexReport, index_directory
 from test_support import FakeBackend
 
 
@@ -86,3 +92,58 @@ def test_health_and_config_use_env_paths_not_query_db(tmp_path: Path) -> None:
     assert config["database"] == str(database)
     assert Path(config["collection"]) == collection.resolve()
     assert config["stats"]["files"] == 1
+
+
+def test_index_job_reports_progress_and_completion(
+    tmp_path: Path, monkeypatch
+) -> None:
+    collection = tmp_path / "photos"
+    collection.mkdir()
+    database = tmp_path / "index.sqlite3"
+    progress_sent = threading.Event()
+    continue_index = threading.Event()
+
+    def fake_index(
+        _collection: Path,
+        _database: Path,
+        _backend: str,
+        *,
+        workers: int,
+        show_progress: bool,
+        progress_callback=None,
+    ) -> IndexReport:
+        assert workers == 1
+        assert show_progress is False
+        progress_callback("checking", 1, 2)
+        progress_sent.set()
+        assert continue_index.wait(timeout=5)
+        progress_callback("indexing", 1, 1)
+        return IndexReport(scanned=2, indexed=1, skipped=1, face_count=1)
+
+    app_module = create_app.__module__
+    monkeypatch.setattr(f"{app_module}.index_directory", fake_index)
+    monkeypatch.setattr(f"{app_module}.index_stats", lambda _database: {"files": 1})
+    client = _client(database, collection)
+    try:
+        start = client.post("/api/index/start", json={"backend": "insightface", "workers": 1})
+        assert start.status_code == 202
+        job_id = start.json()["job_id"]
+        assert progress_sent.wait(timeout=5)
+
+        progress = client.get(f"/api/index/status/{job_id}").json()
+        assert (progress["status"], progress["phase"], progress["completed"], progress["total"]) == (
+            "running", "checking", 1, 2
+        )
+
+        continue_index.set()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            result = client.get(f"/api/index/status/{job_id}").json()
+            if result["status"] == "completed":
+                break
+            time.sleep(0.01)
+        assert result["status"] == "completed"
+        assert result["phase"] == "indexing"
+        assert result["report"]["indexed"] == 1
+    finally:
+        continue_index.set()

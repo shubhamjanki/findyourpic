@@ -7,6 +7,7 @@ import sqlite3
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 from tqdm import tqdm
@@ -123,7 +124,7 @@ def _is_indexed_under_root(stored_path: str, root: Path) -> bool:
     try:
         Path(stored_path).resolve().relative_to(root)
         return True
-    except ValueError:
+    except (ValueError, OSError):
         return False
 
 
@@ -135,9 +136,12 @@ def index_directory(
     workers: int = 1,
     max_dimension: int = 1600,
     show_progress: bool = True,
+    progress_callback: Callable[[str, int, int], None] | None = None,
 ) -> IndexReport:
     root = image_root.expanduser().resolve()
     paths = iter_image_paths(root)
+    if progress_callback is not None:
+        progress_callback("checking", 0, len(paths))
     if workers < 1:
         raise ValueError("workers must be at least 1")
     if max_dimension < 1:
@@ -155,12 +159,21 @@ def index_directory(
         previous_backend = connection.execute(
             "SELECT value FROM metadata WHERE key = 'backend'"
         ).fetchone()
+        previous_source = connection.execute(
+            "SELECT value FROM metadata WHERE key = 'source_root'"
+        ).fetchone()
         if previous_backend and previous_backend[0] != backend_name:
             connection.execute("DELETE FROM files")
             report.backend_changed = True
             LOGGER.warning(
                 "Backend changed from %s to %s; rebuilding the index.",
                 previous_backend[0], backend_name,
+            )
+        if previous_source and Path(previous_source[0]).expanduser().resolve() != root:
+            report.source_changed = True
+            LOGGER.warning(
+                "Source root changed from %s to %s; updating the index metadata.",
+                previous_source[0], str(root),
             )
         connection.execute(
             "INSERT OR REPLACE INTO metadata(key, value) VALUES ('backend', ?)",
@@ -188,7 +201,7 @@ def index_directory(
             report.removed = len(deleted)
 
         tasks: list[tuple[Path, str, int, int, str, int]] = []
-        for path in paths:
+        for checked, path in enumerate(paths, start=1):
             relative_path = _stored_path(path)
             try:
                 stat = path.stat()
@@ -196,13 +209,21 @@ def index_directory(
             except OSError as exc:
                 report.failed += 1
                 report.errors.append(f"{relative_path}: {exc}")
+                if progress_callback is not None:
+                    progress_callback("checking", checked, len(paths))
                 continue
             old = existing.get(relative_path)
             if old == (stat.st_mtime_ns, stat.st_size, digest):
                 report.skipped += 1
+                if progress_callback is not None:
+                    progress_callback("checking", checked, len(paths))
                 continue
             tasks.append((path, relative_path, stat.st_mtime_ns, stat.st_size, digest, max_dimension))
+            if progress_callback is not None:
+                progress_callback("checking", checked, len(paths))
 
+        if progress_callback is not None:
+            progress_callback("indexing", 0, len(tasks))
         progress = tqdm(total=len(tasks), desc="Indexing", unit="image", disable=not show_progress)
         try:
             if workers > 1 and tasks:
@@ -212,15 +233,19 @@ def index_directory(
                     initargs=(backend_name,),
                 ) as executor:
                     results = executor.map(_process_image_worker, tasks, chunksize=1)
-                    for result in results:
+                    for completed, result in enumerate(results, start=1):
                         _store_result(connection, result, report)
                         progress.update(1)
+                        if progress_callback is not None:
+                            progress_callback("indexing", completed, len(tasks))
             else:
                 selected_backend = active_backend or create_backend(backend_name)
-                for task in tasks:
+                for completed, task in enumerate(tasks, start=1):
                     result = _process_image(*task, selected_backend)
                     _store_result(connection, result, report)
                     progress.update(1)
+                    if progress_callback is not None:
+                        progress_callback("indexing", completed, len(tasks))
         finally:
             progress.close()
         connection.commit()
@@ -285,5 +310,6 @@ def clear_index(database: Path = DEFAULT_DATABASE) -> None:
         return
     with sqlite3.connect(database) as connection:
         _schema(connection)
+        connection.execute("DELETE FROM faces")
         connection.execute("DELETE FROM files")
         connection.execute("DELETE FROM metadata")
