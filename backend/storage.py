@@ -91,8 +91,20 @@ class S3Storage:
             raise StorageError("Set S3_BUCKET to the name of your private S3 bucket.")
         if not self.region:
             raise StorageError("Set AWS_REGION to your S3 bucket's region.")
+        from botocore.config import Config
+        boto_config = Config(connect_timeout=5, read_timeout=15, retries={"max_attempts": 2})
+        aws_key = os.environ.get("AWS_ACCESS_KEY_ID", "").strip() or None
+        aws_secret = os.environ.get("AWS_SECRET_ACCESS_KEY", "").strip() or None
         self.client = (
-            client if client is not None else boto3.Session().client("s3", region_name=self.region)
+            client
+            if client is not None
+            else boto3.client(
+                "s3",
+                region_name=self.region,
+                aws_access_key_id=aws_key,
+                aws_secret_access_key=aws_secret,
+                config=boto_config,
+            )
         )
 
     def list_images(

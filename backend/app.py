@@ -181,17 +181,21 @@ def create_app(
 
     @app.get("/api/s3/image")
     def s3_image(key: str = "") -> Response:
-        require_s3_browsing()
-        contents = s3_storage().read_image(key)
-        media_type = mimetypes.guess_type(key)[0] or "application/octet-stream"
-        return Response(
-            content=contents,
-            media_type=media_type,
-            headers={
-                "X-Content-Type-Options": "nosniff",
-                "Cache-Control": "private, max-age=300",
-            },
-        )
+        try:
+            require_s3_browsing()
+            contents = s3_storage().read_image(key)
+            media_type = mimetypes.guess_type(key)[0] or "application/octet-stream"
+            return Response(
+                content=contents,
+                media_type=media_type,
+                headers={
+                    "X-Content-Type-Options": "nosniff",
+                    "Cache-Control": "private, max-age=300",
+                },
+            )
+        except Exception as exc:
+            LOGGER.exception("s3_image failed for key %s: %s", key, exc)
+            raise HTTPException(status_code=500, detail=f"Image fetch error: {exc}")
 
     @app.get("/api/config")
     def config() -> dict[str, Any]:
@@ -246,27 +250,35 @@ def create_app(
 
     @app.get("/api/image")
     def image(path: str = "") -> Response:
-        contents = s3_storage().read_image(path)
-        media_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
-        return Response(
-            content=contents,
-            media_type=media_type,
-            headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "private, max-age=300"},
-        )
+        try:
+            contents = s3_storage().read_image(path)
+            media_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
+            return Response(
+                content=contents,
+                media_type=media_type,
+                headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "private, max-age=300"},
+            )
+        except Exception as exc:
+            LOGGER.exception("image failed for %s: %s", path, exc)
+            raise HTTPException(status_code=500, detail=f"Image fetch error: {exc}")
 
     @app.get("/api/face")
     def face(path: str = "", x1: str = "", y1: str = "", x2: str = "", y2: str = "") -> Response:
-        image_bytes = s3_storage().read_image(path)
         try:
-            box = (int(x1), int(y1), int(x2), int(y2))
-        except ValueError as exc:
-            raise ValueError("Invalid face bounding box.") from exc
-        body = service.crop_face_from_bytes(image_bytes, box)
-        return Response(
-            content=body,
-            media_type="image/jpeg",
-            headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "private, max-age=300"},
-        )
+            image_bytes = s3_storage().read_image(path)
+            try:
+                box = (int(x1), int(y1), int(x2), int(y2))
+            except ValueError as exc:
+                raise ValueError("Invalid face bounding box.") from exc
+            body = service.crop_face_from_bytes(image_bytes, box)
+            return Response(
+                content=body,
+                media_type="image/jpeg",
+                headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "private, max-age=300"},
+            )
+        except Exception as exc:
+            LOGGER.exception("face crop failed for %s: %s", path, exc)
+            raise HTTPException(status_code=500, detail=f"Face crop error: {exc}")
 
     def index_options(payload: dict[str, Any]) -> tuple[str, int]:
         backend = payload.get("backend", "insightface")
