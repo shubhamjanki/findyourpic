@@ -570,14 +570,28 @@ def _remove_feedback_copies(store: Any, path: str) -> None:
 
 
 def _mount_frontend(app: FastAPI) -> None:
-    repo_root = Path(__file__).resolve().parents[2]
-    react_dist = repo_root / "apps" / "frontend" / "dist"
-    legacy = Path(__file__).resolve().parents[2] / "face_search" / "web"
-    # When running from installed layout, also check next to the package.
-    if not legacy.is_dir():
-        legacy = Path(__file__).resolve().parents[2]
+    here = Path(__file__).resolve()
 
-    if react_dist.is_dir():
+    # Collect candidate paths for the React dist without assuming a fixed
+    # directory depth (safe inside Docker where /app/app.py has only 2 parents).
+    candidates: list[Path] = []
+    for depth in range(len(here.parents)):
+        base = here.parents[depth]
+        candidates.append(base / "frontend" / "dist")
+        candidates.append(base / "apps" / "frontend" / "dist")
+
+    react_dist: Path | None = next((p for p in candidates if p.is_dir()), None)
+
+    # Legacy web directory (same safe traversal).
+    legacy: Path | None = None
+    for depth in range(len(here.parents)):
+        base = here.parents[depth]
+        candidate = base / "face_search" / "web"
+        if candidate.is_dir():
+            legacy = candidate
+            break
+
+    if react_dist is not None and react_dist.is_dir():
         index_file = react_dist / "index.html"
 
         @app.get("/")
@@ -586,7 +600,7 @@ def _mount_frontend(app: FastAPI) -> None:
 
         app.mount("/", StaticFiles(directory=react_dist, html=True), name="web")
         return
-    if legacy.is_dir() and (legacy / "index.html").is_file():
+    if legacy is not None and legacy.is_dir() and (legacy / "index.html").is_file():
         @app.get("/")
         def legacy_index() -> Any:
             return _file_response(legacy / "index.html", "text/html; charset=utf-8")
