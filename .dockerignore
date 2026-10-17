@@ -14,6 +14,8 @@ photos-private
 matches
 *.sqlite
 *.sqlite3
+!index.sqlite3
+!backend/index.sqlite3
 *.onnx
 *.pb
 .insightface

@@ -18,6 +18,9 @@ RUN pip install --no-cache-dir --upgrade pip \
 RUN mkdir -p /root/.insightface/models/buffalo_s /data/.insightface/models/buffalo_s \
     && python -c "import urllib.request, zipfile, io; res = urllib.request.urlopen('https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_s.zip'); z = zipfile.ZipFile(io.BytesIO(res.read())); z.extractall('/root/.insightface/models/buffalo_s'); z.extractall('/data/.insightface/models/buffalo_s')" || true
 
+# Pre-seed SQLite index with S3 face embeddings (so Render starts with all photos indexed)
+COPY index.sqlite3 /data/index.sqlite3
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app \
     FACE_SEARCH_DB=/data/index.sqlite3 \
