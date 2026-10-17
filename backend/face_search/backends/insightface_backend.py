@@ -11,13 +11,38 @@ from face_search.backends.base import BoundingBox, FaceBackend, FaceDetection
 
 class InsightFaceBackend(FaceBackend):
     def __init__(self, model_name: str = "buffalo_l") -> None:
-        model_dir = Path.home() / ".insightface" / "models" / model_name
-        if not model_dir.is_dir() or not any(model_dir.glob("*.onnx")):
-            raise RuntimeError(
-                f"InsightFace model '{model_name}' is not installed locally at "
-                f"{model_dir}. Install the model pack before running; this tool "
-                "does not download model files."
-            )
+        candidate_roots = [
+            Path.home() / ".insightface",
+            Path("/root/.insightface"),
+            Path("/data/.insightface"),
+            Path("/app/.insightface"),
+        ]
+        model_dir = None
+        for root in candidate_roots:
+            candidate = root / "models" / model_name
+            if candidate.is_dir() and any(candidate.glob("*.onnx")):
+                model_dir = candidate
+                break
+
+        if model_dir is None:
+            target_root = Path.home() / ".insightface"
+            model_dir = target_root / "models" / model_name
+            model_dir.mkdir(parents=True, exist_ok=True)
+            import io
+            import urllib.request
+            import zipfile
+            url = f"https://github.com/deepinsight/insightface/releases/download/v0.7/{model_name}.zip"
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=180) as resp:
+                    with zipfile.ZipFile(io.BytesIO(resp.read())) as archive:
+                        archive.extractall(model_dir)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"InsightFace model '{model_name}' could not be downloaded to {model_dir}: {exc}"
+                ) from exc
+
+        root_dir = model_dir.parent.parent
 
         try:
             from insightface.app import FaceAnalysis
@@ -38,7 +63,7 @@ class InsightFaceBackend(FaceBackend):
         ctx_id = 0 if "CUDAExecutionProvider" in providers else -1
         self._app = FaceAnalysis(
             name=model_name,
-            root=str(Path.home() / ".insightface"),
+            root=str(root_dir),
             providers=providers,
         )
         self._app.prepare(ctx_id=ctx_id, det_size=(640, 640))

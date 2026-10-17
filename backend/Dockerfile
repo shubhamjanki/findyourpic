@@ -16,6 +16,9 @@ RUN pip install --no-cache-dir --upgrade pip \
     && pip uninstall --yes onnxruntime \
     && pip install --no-cache-dir "onnxruntime-gpu[cuda,cudnn]"
 
+RUN mkdir -p /root/.insightface/models/buffalo_l \
+    && python -c "import urllib.request, zipfile, io; res = urllib.request.urlopen('https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip'); zipfile.ZipFile(io.BytesIO(res.read())).extractall('/root/.insightface/models/buffalo_l')" || true
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app \
     FACE_SEARCH_DB=/data/index.sqlite3 \
