@@ -432,16 +432,6 @@ def create_app(
         if not isinstance(path, str) or value not in ("like", "up", "down", None):
             raise ValueError("Invalid photo feedback.")
         cfg = current_settings()
-        store = storage()
-        if value in ("like", "up"):
-            _copy_to_folder(store, path, "liked")
-        elif value == "down":
-            _remove_feedback_copies(store, path)
-            _copy_to_folder(store, path, "disliked")
-        else:
-            _remove_feedback_copies(store, path)
-        if value in ("like", "up"):
-            _remove_from_folder(store, path, "disliked")
         with sqlite3.connect(cfg.database) as connection:
             service.ensure_custom_tables(connection)
             if value is None:
@@ -459,31 +449,17 @@ def create_app(
         if not isinstance(path, str) or not path.strip():
             raise ValueError("Invalid photo path.")
         cfg = current_settings()
-        store = storage()
-        target = store.resolve(path)
-        trash_dir = store.root / "deleted"
-        trash_dir.mkdir(parents=True, exist_ok=True)
-        safe_name = target.name
-        counter = 1
-        while (trash_dir / safe_name).exists():
-            safe_name = f"{target.stem}_{counter}{target.suffix}"
-            counter += 1
-        moved = trash_dir / safe_name
-        if target.exists() and target.is_file():
-            shutil.copy2(target, moved)
-            target.unlink()
-        stored = str(target)
         with sqlite3.connect(cfg.database) as connection:
             service.ensure_custom_tables(connection)
-            connection.execute("DELETE FROM files WHERE path = ?", (stored,))
-            connection.execute("DELETE FROM faces WHERE path = ?", (stored,))
-            connection.execute("DELETE FROM photo_feedback WHERE path = ?", (stored,))
+            connection.execute("DELETE FROM files WHERE path = ?", (path,))
+            connection.execute("DELETE FROM faces WHERE path = ?", (path,))
+            connection.execute("DELETE FROM photo_feedback WHERE path = ?", (path,))
             connection.commit()
         return {
             "deleted": True,
-            "path": stored,
-            "trash": store.relative_name(moved),
-            "message": "Photo moved to trash.",
+            "path": path,
+            "trash": "",
+            "message": "Photo removed from index.",
         }
 
     @app.post("/api/download-zip")
@@ -493,14 +469,14 @@ def create_app(
             raise ValueError("Select at least one photo to download.")
         if any(not isinstance(path, str) or not path for path in requested_paths):
             raise ValueError("Invalid photo path in download request.")
-        store = storage()
         unique_paths = list(dict.fromkeys(requested_paths))
         archive_file = tempfile.TemporaryFile()
         try:
             with zipfile.ZipFile(archive_file, "w", zipfile.ZIP_DEFLATED) as archive:
                 for requested in unique_paths:
-                    image_path = store.resolve(requested)
-                    archive.write(image_path, store.relative_name(image_path))
+                    image_bytes = s3_storage().read_image(requested)
+                    safe_filename = Path(requested).name
+                    archive.writestr(safe_filename, image_bytes)
             archive_file.seek(0)
 
             def iterator():

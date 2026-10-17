@@ -224,7 +224,7 @@ def list_feedback(database: Path) -> dict[str, str]:
 
 def list_photos(
     database: Path,
-    storage: LocalStorage,
+    storage: Any = None,
     *,
     page: int,
     page_size: int,
@@ -232,25 +232,34 @@ def list_photos(
     kind: str,
     sort: str,
 ) -> dict[str, Any]:
-    if kind in {"liked", "disliked", "deleted"}:
-        folder = storage.root / kind
-        if not folder.exists():
-            return {"photos": [], "total": 0, "page": page, "page_size": page_size, "kind": kind}
-        entries = [
-            path for path in folder.iterdir()
-            if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS
-        ]
-        if sort == "name":
-            entries.sort(key=lambda path: path.name.lower())
-        else:
-            entries.sort(key=lambda path: (path.stat().st_mtime_ns, str(path)), reverse=True)
-        total = len(entries)
-        paged = entries[(page - 1) * page_size: page * page_size]
-        photos = [{"path": str(path.relative_to(storage.root)), "faces": 1} for path in paged]
-        return {"photos": photos, "total": total, "page": page, "page_size": page_size, "kind": kind}
     if not database.exists():
         return {"photos": [], "total": 0, "page": page, "page_size": page_size, "kind": kind}
     with sqlite3.connect(database) as connection:
+        ensure_custom_tables(connection)
+        if kind in {"liked", "disliked"}:
+            target_value = "like" if kind == "liked" else "down"
+            base_query = "FROM files f JOIN photo_feedback fb ON fb.path = f.path WHERE fb.value = ?"
+            params: list[Any] = [target_value]
+            if query:
+                base_query += " AND lower(f.path) LIKE ?"
+                params.append(f"%{query}%")
+            total = connection.execute(f"SELECT COUNT(*) {base_query}", params).fetchone()[0]
+            ordering = "f.mtime_ns DESC" if sort == "newest" else "f.path ASC"
+            rows = connection.execute(
+                f"""SELECT f.path, (SELECT COUNT(*) FROM faces x WHERE x.path = f.path)
+                   {base_query} ORDER BY {ordering} LIMIT ? OFFSET ?""",
+                params + [page_size, (page - 1) * page_size],
+            ).fetchall()
+            return {
+                "photos": [{"path": path, "faces": face_count, "source": "s3"} for path, face_count in rows],
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "kind": kind,
+            }
+        if kind == "deleted":
+            return {"photos": [], "total": 0, "page": page, "page_size": page_size, "kind": kind}
+
         if query:
             pattern = f"%{query}%"
             total = connection.execute(
@@ -271,7 +280,7 @@ def list_photos(
                 (page_size, (page - 1) * page_size),
             ).fetchall()
     return {
-        "photos": [{"path": path, "faces": face_count} for path, face_count in rows],
+        "photos": [{"path": path, "faces": face_count, "source": "s3"} for path, face_count in rows],
         "total": total,
         "page": page,
         "page_size": page_size,

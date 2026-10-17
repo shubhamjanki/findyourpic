@@ -147,7 +147,7 @@ export default function App() {
   const [photos, setPhotos] = useState([]);
   const [photoTotal, setPhotoTotal] = useState(0);
   const [photoPage, setPhotoPage] = useState(0);
-  const [photoSource, setPhotoSource] = useState("local");
+  const [photoSource, setPhotoSource] = useState("s3");
   const [s3NextToken, setS3NextToken] = useState(null);
   const [s3HasMore, setS3HasMore] = useState(false);
   const [photoQuery, setPhotoQuery] = useState("");
@@ -323,14 +323,19 @@ export default function App() {
     }
   }, [people.length, peoplePage, peopleQuery, peopleTotal]);
 
-  const openAll = async (query = "", kind = photoFilter) => {
+  const openAll = async (query = "", kind = "all") => {
     setGalleryPerson(null);
-    setPhotoSource("local");
+    setPhotoSource("s3");
     setSelected(new Set());
     setReturnScreen("all");
     setGalleryMessage(null);
     goScreen("all");
-    await loadPhotos({ reset: true, query, kind, sort: photoSort });
+    if (kind && kind !== "all") {
+      setPhotoFilter(kind);
+      await loadPhotos({ reset: true, query, kind, sort: photoSort });
+    } else {
+      await loadS3Photos({ reset: true });
+    }
   };
 
   const openS3Gallery = async () => {
@@ -354,9 +359,9 @@ export default function App() {
 
   const openPersonGallery = (person) => {
     setGalleryPerson(person);
-    setPhotoSource("local");
+    setPhotoSource("s3");
     setSelected(new Set());
-    setPhotos(person.photos.map((photo) => ({ ...photo, faces: 1 })));
+    setPhotos(person.photos.map((photo) => ({ ...photo, source: "s3", faces: 1 })));
     setPhotoTotal(person.photos.length);
     setPhotoQuery("");
     setPhotoFilter("all");
@@ -449,13 +454,13 @@ export default function App() {
         if (faceIndex === null) throw new Error("Search cancelled.");
         queries.push({ token: detected.token, face_index: faceIndex });
       }
-      setSearchOverlay({ title: "Matching your photo…", detail: "Comparing face embeddings in your local collection." });
+      setSearchOverlay({ title: "Matching your photo…", detail: "Comparing face embeddings in your collection." });
       const result = await requestJson("/api/search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ queries, threshold: Number(threshold), top_n: Number(topN) }),
       });
-      const matches = result.matches.map((match) => ({ path: match.path, faces: 1, score: match.score }));
+      const matches = result.matches.map((match) => ({ path: match.path, faces: 1, score: match.score, source: "s3" }));
       setHomeMessage({ text: `${matches.length} matching photo${matches.length === 1 ? "" : "s"} found.`, kind: "success" });
       if (matches.length) openViewer(matches, 0, "home", collectionName);
     } catch (error) {
@@ -846,7 +851,7 @@ export default function App() {
           </details>
           <Notice message={homeMessage?.text} kind={homeMessage?.kind} />
           <section className="tagline" aria-label="About Find Your Pic"><Tagline /></section>
-          <div className="home-note"><i className="ph ph-lock-simple tiny-lock" aria-hidden="true"></i> Your photos stay on this device</div>
+          <div className="home-note"><i className="ph ph-shield-check tiny-lock" aria-hidden="true"></i> Photos loaded securely from your S3 bucket</div>
         </section>
 
         <section className={`screen content-screen${screen === "all" ? "" : " hidden"}`}>
@@ -882,31 +887,13 @@ export default function App() {
               ))}
             </div>
           ) : null}
-          {galleryPerson ? null : (
+          {galleryPerson ? null : photoSource !== "s3" ? (
             <div className="photo-filters">
-              <button
-                className={`filter-button${photoSource === "s3" ? " active" : ""}`}
-                type="button"
-                onClick={() => photoSource === "s3" ? openAll("", "all") : openS3Gallery()}
-              >
-                {photoSource === "s3" ? "Back to local photos" : "Browse S3 bucket"}
-              </button>
-              {photoSource === "local" ? (
-                <>
-                  {["all", "liked", "disliked", "deleted"].map((kind) => (
-                    <button key={kind} className={`filter-button${photoFilter === kind ? " active" : ""}`} type="button" onClick={() => { setPhotoFilter(kind); loadPhotos({ reset: true, query: photoQuery, kind, sort: photoSort }); }}>{kind === "deleted" ? "Trash" : kind[0].toUpperCase() + kind.slice(1)}</button>
-                  ))}
-                  <label className="photo-sort">
-                    <span>Sort</span>
-                    <select value={photoSort} onChange={(event) => { const sort = event.target.value; setPhotoSort(sort); loadPhotos({ reset: true, query: photoQuery, kind: photoFilter, sort }); }}>
-                      <option value="newest">Newest</option>
-                      <option value="name">Name</option>
-                    </select>
-                  </label>
-                </>
-              ) : null}
+              {["liked", "disliked", "deleted"].map((kind) => (
+                <button key={kind} className={`filter-button${photoFilter === kind ? " active" : ""}`} type="button" onClick={() => { setPhotoFilter(kind); loadPhotos({ reset: true, query: photoQuery, kind, sort: photoSort }); }}>{kind === "deleted" ? "Trash" : kind[0].toUpperCase() + kind.slice(1)}</button>
+              ))}
             </div>
-          )}
+          ) : null}
           {galleryPerson ? (
             <div className="selection-tools">
               <span>{selected.size} selected</span>
