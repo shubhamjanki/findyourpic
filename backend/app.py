@@ -75,12 +75,24 @@ def create_app(
     app.state.index_run_lock = threading.Lock()
     app.state.index_job_lock = threading.Lock()
     app.state.index_job = None
+    cors_origins = list(settings.cors_origins)
+    for origin in [
+        "https://findyourpic.vercel.app",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:8511",
+        "http://127.0.0.1:8511",
+    ]:
+        if origin not in cors_origins:
+            cors_origins.append(origin)
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.cors_origins,
-        allow_credentials=False,
-        allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Content-Type"],
+        allow_origins=cors_origins,
+        allow_origin_regex=r"https://.*\.vercel\.app",
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 
     def current_settings() -> Settings:
