@@ -20,7 +20,6 @@ from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from fastapi.staticfiles import StaticFiles
 from PIL import Image, UnidentifiedImageError
 
 try:
@@ -538,7 +537,6 @@ def create_app(
         clear_index(database)
         return {"cleared": True, "stats": index_stats(database)}
 
-    _mount_frontend(app)
     return app
 
 
@@ -567,55 +565,6 @@ def _remove_from_folder(store: Any, path: str, folder_name: str) -> None:
 def _remove_feedback_copies(store: Any, path: str) -> None:
     for folder_name in ("liked", "disliked"):
         _remove_from_folder(store, path, folder_name)
-
-
-def _mount_frontend(app: FastAPI) -> None:
-    here = Path(__file__).resolve()
-
-    # Collect candidate paths for the React dist without assuming a fixed
-    # directory depth (safe inside Docker where /app/app.py has only 2 parents).
-    candidates: list[Path] = []
-    for depth in range(len(here.parents)):
-        base = here.parents[depth]
-        candidates.append(base / "frontend" / "dist")
-        candidates.append(base / "apps" / "frontend" / "dist")
-
-    react_dist: Path | None = next((p for p in candidates if p.is_dir()), None)
-
-    # Legacy web directory (same safe traversal).
-    legacy: Path | None = None
-    for depth in range(len(here.parents)):
-        base = here.parents[depth]
-        candidate = base / "face_search" / "web"
-        if candidate.is_dir():
-            legacy = candidate
-            break
-
-    if react_dist is not None and react_dist.is_dir():
-        index_file = react_dist / "index.html"
-
-        @app.get("/")
-        def spa_index() -> Any:
-            return _file_response(index_file, "text/html; charset=utf-8")
-
-        app.mount("/", StaticFiles(directory=react_dist, html=True), name="web")
-        return
-    if legacy is not None and legacy.is_dir() and (legacy / "index.html").is_file():
-        @app.get("/")
-        def legacy_index() -> Any:
-            return _file_response(legacy / "index.html", "text/html; charset=utf-8")
-
-        @app.get("/assets/app.css")
-        def legacy_css() -> Any:
-            return _file_response(legacy / "app.css", "text/css")
-
-        @app.get("/assets/app.js")
-        def legacy_js() -> Any:
-            return _file_response(legacy / "app.js", "application/javascript")
-
-
-def _file_response(path: Path, media_type: str) -> Response:
-    return Response(content=path.read_bytes(), media_type=media_type)
 
 
 app = create_app()
