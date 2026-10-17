@@ -44,6 +44,15 @@ def _split_origins(raw: str) -> list[str]:
     return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
 
+_DEFAULT_CORS = (
+    "http://127.0.0.1:8511,"
+    "http://localhost:8511,"
+    "http://127.0.0.1:5173,"
+    "http://localhost:5173,"
+    "https://findyourpic.vercel.app"
+)
+
+
 @dataclass(frozen=True)
 class Settings:
     database: Path
@@ -63,12 +72,8 @@ class Settings:
         db = Path(database or os.environ.get("FACE_SEARCH_DB", str(DEFAULT_DATABASE))).expanduser()
         env_root = os.environ.get("PHOTO_ROOT")
         root = photo_root if photo_root is not None else (Path(env_root).expanduser() if env_root else None)
-        origins = cors_origins or _split_origins(
-            os.environ.get(
-                "CORS_ORIGINS",
-                "http://127.0.0.1:8511,http://localhost:8511,http://127.0.0.1:5173,http://localhost:5173",
-            )
-        )
+        raw_origins = os.environ.get("CORS_ORIGINS", _DEFAULT_CORS)
+        origins = cors_origins or _split_origins(raw_origins)
         backend = (storage_backend or os.environ.get("STORAGE_BACKEND", "local")).strip().lower()
         return cls(database=db, photo_root=root, storage_backend=backend, cors_origins=origins)
 
