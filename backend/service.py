@@ -141,6 +141,34 @@ def crop_face_jpeg(image_path: Path, box: tuple[int, int, int, int]) -> bytes:
         data = output.getvalue()
 
     return _cache_face(cache_key, data)
+def crop_face_from_bytes(image_bytes: bytes, box: tuple[int, int, int, int]) -> bytes:
+    """Crop a face thumbnail from raw image bytes (used with S3 storage)."""
+    from io import BytesIO
+
+    cache_key = (hash(image_bytes), box)
+    with _face_cache_lock:
+        cached = _face_cache.get(cache_key)
+        if cached is not None:
+            _face_cache.move_to_end(cache_key)
+            return cached
+
+    with Image.open(BytesIO(image_bytes)) as source:
+        image = ImageOps.exif_transpose(source).convert("RGB")
+        x1, y1, x2, y2 = box
+        padding = max(12, (x2 - x1) // 3, (y2 - y1) // 3)
+        crop = image.crop((
+            max(0, x1 - padding),
+            max(0, y1 - padding),
+            min(image.width, x2 + padding),
+            min(image.height, y2 + padding),
+        ))
+        crop.thumbnail((320, 320))
+        output = BytesIO()
+        crop.save(output, format="JPEG", quality=88)
+        data = output.getvalue()
+
+    return _cache_face(cache_key, data)
+
 
 
 def collection_name(database: Path, fallback_root: Path) -> str:

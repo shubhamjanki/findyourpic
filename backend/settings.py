@@ -74,7 +74,7 @@ class Settings:
         root = photo_root if photo_root is not None else (Path(env_root).expanduser() if env_root else None)
         raw_origins = os.environ.get("CORS_ORIGINS", _DEFAULT_CORS)
         origins = cors_origins or _split_origins(raw_origins)
-        backend = (storage_backend or os.environ.get("STORAGE_BACKEND", "local")).strip().lower()
+        backend = (storage_backend or os.environ.get("STORAGE_BACKEND", "s3")).strip().lower()
         return cls(database=db, photo_root=root, storage_backend=backend, cors_origins=origins)
 
     def collection_root(self) -> Path:

@@ -82,11 +82,6 @@ def create_app(
     def current_settings() -> Settings:
         return app.state.settings
 
-    def storage():
-        try:
-            return service.storage_for(current_settings())
-        except StorageError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     def s3_storage():
         try:
@@ -205,7 +200,7 @@ def create_app(
             raise ValueError("Page and page size must be integers.")
         return service.list_photos(
             current_settings().database,
-            storage(),
+            s3_storage(),
             page=page,
             page_size=min(service.MAX_PAGE_SIZE, page_size),
             query=q.strip().lower(),
@@ -226,22 +221,22 @@ def create_app(
 
     @app.get("/api/image")
     def image(path: str = "") -> Response:
-        image_path = storage().resolve(path)
-        media_type = mimetypes.guess_type(image_path.name)[0] or "application/octet-stream"
+        contents = s3_storage().read_image(path)
+        media_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
         return Response(
-            content=image_path.read_bytes(),
+            content=contents,
             media_type=media_type,
             headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "private, max-age=300"},
         )
 
     @app.get("/api/face")
     def face(path: str = "", x1: str = "", y1: str = "", x2: str = "", y2: str = "") -> Response:
-        image_path = storage().resolve(path)
+        image_bytes = s3_storage().read_image(path)
         try:
             box = (int(x1), int(y1), int(x2), int(y2))
         except ValueError as exc:
             raise ValueError("Invalid face bounding box.") from exc
-        body = service.crop_face_jpeg(image_path, box)
+        body = service.crop_face_from_bytes(image_bytes, box)
         return Response(
             content=body,
             media_type="image/jpeg",
