@@ -191,13 +191,16 @@ def crop_face_from_bytes(image_bytes: bytes, box: tuple[int, int, int, int]) -> 
     with Image.open(BytesIO(image_bytes)) as source:
         image = ImageOps.exif_transpose(source).convert("RGB")
         x1, y1, x2, y2 = box
-        padding = max(12, (x2 - x1) // 3, (y2 - y1) // 3)
-        crop = image.crop((
-            max(0, x1 - padding),
-            max(0, y1 - padding),
-            min(image.width, x2 + padding),
-            min(image.height, y2 + padding),
-        ))
+        padding = max(12, abs(x2 - x1) // 3, abs(y2 - y1) // 3)
+        left = max(0, min(x1, x2) - padding)
+        top = max(0, min(y1, y2) - padding)
+        right = min(image.width, max(x1, x2) + padding)
+        bottom = min(image.height, max(y1, y2) + padding)
+        if right <= left:
+            left, right = 0, max(1, min(image.width, 320))
+        if bottom <= top:
+            top, bottom = 0, max(1, min(image.height, 320))
+        crop = image.crop((left, top, right, bottom))
         crop.thumbnail((320, 320))
         output = BytesIO()
         crop.save(output, format="JPEG", quality=88)

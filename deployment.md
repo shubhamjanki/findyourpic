@@ -228,3 +228,22 @@ Git push the updated backend/index.sqlite3:
 powershell
 git commit -am "update index"; git push
 Render updates with the new index automatically in under a minute.
+
+
+
+
+
+
+[ Local Computer ]
+  1. Upload photos to S3
+  2. Run local indexing:
+     .\.venv\Scripts\python -c "import sys; sys.path.insert(0, 'backend'); from storage import create_s3_storage; from service import index_s3; index_s3(create_s3_storage(), 'backend/index.sqlite3')"
+  3. git commit -am "update index" && git push
+         │
+         ▼ (Render auto-deploys with pre-loaded database)
+[ Render Backend (Cloud) ]
+  • No heavy bulk indexing in the cloud (zero OOM risk)
+  • When a user uploads a reference face to search:
+      - /api/detect: Extracts embedding of that single face (~150ms, ~30MB RAM)
+      - /api/search: Queries SQLite vectors via cosine similarity and returns matches
+  • Serves fast 320px face crops and 500px photo thumbnails

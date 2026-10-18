@@ -186,6 +186,37 @@ export default function App() {
   const photoLoadingRef = useRef(false);
   const peopleLoadingRef = useRef(false);
 
+  // Refs to hold current state values for stable callbacks.
+  // This avoids including mutable state in useCallback deps which
+  // would recreate the callbacks on every load and trigger an
+  // IntersectionObserver → load → state change → re-create loop.
+  const photosRef = useRef(photos);
+  const photoTotalRef = useRef(photoTotal);
+  const photoPageRef = useRef(photoPage);
+  const photoQueryRef = useRef(photoQuery);
+  const photoFilterRef = useRef(photoFilter);
+  const photoSortRef = useRef(photoSort);
+  const s3NextTokenRef = useRef(s3NextToken);
+  const s3HasMoreRef = useRef(s3HasMore);
+  const peopleRef = useRef(people);
+  const peopleTotalRef = useRef(peopleTotal);
+  const peoplePageRef = useRef(peoplePage);
+  const peopleQueryRef = useRef(peopleQuery);
+
+  // Keep refs in sync with state
+  photosRef.current = photos;
+  photoTotalRef.current = photoTotal;
+  photoPageRef.current = photoPage;
+  photoQueryRef.current = photoQuery;
+  photoFilterRef.current = photoFilter;
+  photoSortRef.current = photoSort;
+  s3NextTokenRef.current = s3NextToken;
+  s3HasMoreRef.current = s3HasMore;
+  peopleRef.current = people;
+  peopleTotalRef.current = peopleTotal;
+  peoplePageRef.current = peoplePage;
+  peopleQueryRef.current = peopleQuery;
+
   useReveal();
 
   const goScreen = (name) => {
@@ -219,25 +250,37 @@ export default function App() {
     })();
   }, [loadFeedback, loadTitle]);
 
-  const loadPhotos = useCallback(async ({ reset = false, query = photoQuery, kind = photoFilter, sort = photoSort } = {}) => {
+  const loadPhotos = useCallback(async ({ reset = false, query, kind, sort } = {}) => {
+    // Read current values from refs (stable — no dep-array churn)
+    const curQuery = query !== undefined ? query : photoQueryRef.current;
+    const curKind = kind !== undefined ? kind : photoFilterRef.current;
+    const curSort = sort !== undefined ? sort : photoSortRef.current;
+
     if (photoLoadingRef.current && !reset) return;
-    if (!reset && photos.length >= photoTotal && photoTotal > 0) return;
+    if (!reset && photosRef.current.length >= photoTotalRef.current && photoTotalRef.current > 0) return;
+
+    const requestId = ++photoRequest.current;
     if (reset) {
-      photoRequest.current += 1;
       setPhotos([]);
       setPhotoPage(0);
       setPhotoTotal(0);
-      setPhotoQuery(query);
-      setPhotoFilter(kind);
-      setPhotoSort(sort);
+      setPhotoQuery(curQuery);
+      setPhotoFilter(curKind);
+      setPhotoSort(curSort);
+      // Sync refs immediately so subsequent reads are correct
+      photosRef.current = [];
+      photoTotalRef.current = 0;
+      photoPageRef.current = 0;
+      photoQueryRef.current = curQuery;
+      photoFilterRef.current = curKind;
+      photoSortRef.current = curSort;
     }
     photoLoadingRef.current = true;
     setPhotoLoading(true);
-    const requestId = ++photoRequest.current;
-    const page = reset ? 1 : photoPage + 1;
+    const page = reset ? 1 : photoPageRef.current + 1;
     try {
       const result = await requestJson(
-        `/api/photos?page=${page}&page_size=24&q=${encodeURIComponent(query)}&kind=${encodeURIComponent(kind)}&sort=${encodeURIComponent(sort)}`,
+        `/api/photos?page=${page}&page_size=24&q=${encodeURIComponent(curQuery)}&kind=${encodeURIComponent(curKind)}&sort=${encodeURIComponent(curSort)}`,
       );
       if (requestId !== photoRequest.current) return;
       setPhotoTotal(result.total);
@@ -253,22 +296,25 @@ export default function App() {
         setPhotoLoading(false);
       }
     }
-  }, [photoFilter, photoPage, photoQuery, photoSort, photoTotal, photos.length]);
+  }, []);
 
   const loadS3Photos = useCallback(async ({ reset = false } = {}) => {
     if (photoLoadingRef.current && !reset) return;
-    if (!reset && !s3HasMore) return;
+    if (!reset && !s3HasMoreRef.current) return;
+
+    const requestId = ++photoRequest.current;
     if (reset) {
-      photoRequest.current += 1;
       setPhotos([]);
       setPhotoTotal(0);
       setS3NextToken(null);
       setS3HasMore(true);
+      photosRef.current = [];
+      s3NextTokenRef.current = null;
+      s3HasMoreRef.current = true;
     }
     photoLoadingRef.current = true;
     setPhotoLoading(true);
-    const requestId = ++photoRequest.current;
-    const startAfter = reset ? null : s3NextToken;
+    const startAfter = reset ? null : s3NextTokenRef.current;
     const tokenQuery = startAfter ? `&start_after=${encodeURIComponent(startAfter)}` : "";
     try {
       const result = await requestJson(`/api/s3/photos?page_size=24${tokenQuery}`);
@@ -287,25 +333,31 @@ export default function App() {
         setPhotoLoading(false);
       }
     }
-  }, [s3HasMore, s3NextToken]);
+  }, []);
 
-  const loadPeople = useCallback(async ({ reset = false, query = peopleQuery } = {}) => {
+  const loadPeople = useCallback(async ({ reset = false, query } = {}) => {
+    const curQuery = query !== undefined ? query : peopleQueryRef.current;
+
     if (peopleLoadingRef.current && !reset) return;
-    if (!reset && people.length >= peopleTotal && peopleTotal > 0) return;
+    if (!reset && peopleRef.current.length >= peopleTotalRef.current && peopleTotalRef.current > 0) return;
+
+    const requestId = ++peopleRequest.current;
     if (reset) {
-      peopleRequest.current += 1;
       setPeople([]);
       setPeoplePage(1);
       setPeopleTotal(0);
-      setPeopleQuery(query);
+      setPeopleQuery(curQuery);
+      peopleRef.current = [];
+      peopleTotalRef.current = 0;
+      peoplePageRef.current = 1;
+      peopleQueryRef.current = curQuery;
     }
     peopleLoadingRef.current = true;
     setPeopleLoading(true);
-    const requestId = ++peopleRequest.current;
-    const page = reset ? 1 : peoplePage;
+    const page = reset ? 1 : peoplePageRef.current;
     try {
       const result = await requestJson(
-        `/api/people?page=${page}&page_size=24&q=${encodeURIComponent(query)}`,
+        `/api/people?page=${page}&page_size=24&q=${encodeURIComponent(curQuery)}`,
       );
       if (requestId !== peopleRequest.current) return;
       setPeopleTotal(result.total);
@@ -321,7 +373,7 @@ export default function App() {
         setPeopleLoading(false);
       }
     }
-  }, [people.length, peoplePage, peopleQuery, peopleTotal]);
+  }, []);
 
   const openAll = async (query = "", kind = "all") => {
     setGalleryPerson(null);
@@ -399,7 +451,7 @@ export default function App() {
     const node = loadMoreRef.current;
     if (!node) return undefined;
     const observer = new IntersectionObserver((entries) => {
-      const hasMore = photoSource === "s3" ? s3HasMore : photos.length < photoTotal;
+      const hasMore = photoSource === "s3" ? s3HasMoreRef.current : photosRef.current.length < photoTotalRef.current;
       if (entries.some((entry) => entry.isIntersecting) && !photoLoadingRef.current && hasMore) {
         if (photoSource === "s3") loadS3Photos();
         else loadPhotos();
@@ -407,26 +459,29 @@ export default function App() {
     }, { rootMargin: "320px 0px" });
     observer.observe(node);
     return () => observer.disconnect();
-  }, [galleryPerson, loadPhotos, loadS3Photos, photoSource, photoTotal, photos.length, s3HasMore, screen]);
+  }, [galleryPerson, loadPhotos, loadS3Photos, photoSource, screen]);
 
   useEffect(() => {
     if (screen !== "collection") return undefined;
     const node = peopleMoreRef.current;
     if (!node) return undefined;
     const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting) && !peopleLoadingRef.current && people.length < peopleTotal) {
+      if (entries.some((entry) => entry.isIntersecting) && !peopleLoadingRef.current && peopleRef.current.length < peopleTotalRef.current) {
         loadPeople();
       }
     }, { rootMargin: "320px 0px" });
     observer.observe(node);
     return () => observer.disconnect();
-  }, [loadPeople, people.length, peopleTotal, screen]);
+  }, [loadPeople, screen]);
 
-  const chooseFace = (faces) => {
+  const chooseFace = (faces, data) => {
+    if (!faces || faces.length === 0) {
+      throw new Error("No face was detected in this photo. Please try a different photo with a clear, visible face.");
+    }
     if (faces.length === 1) return Promise.resolve(faces[0].index);
     return new Promise((resolve) => {
       faceResolve.current = resolve;
-      setFaceChoices(faces);
+      setFaceChoices({ faces, imageSrc: data ? `data:image/jpeg;base64,${data}` : null });
     });
   };
 
@@ -450,9 +505,15 @@ export default function App() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ data, name: file.name || "camera.jpg", backend }),
         });
-        const faceIndex = await chooseFace(detected.faces);
+        // Clear overlay before prompting user to choose a face if multiple are detected
+        setSearchOverlay(null);
+        const faceIndex = await chooseFace(detected.faces, data);
         if (faceIndex === null) throw new Error("Search cancelled.");
-        queries.push({ token: detected.token, face_index: faceIndex });
+        if (Array.isArray(faceIndex)) {
+          faceIndex.forEach((idx) => queries.push({ token: detected.token, face_index: idx }));
+        } else {
+          queries.push({ token: detected.token, face_index: faceIndex });
+        }
       }
       setSearchOverlay({ title: "Matching your photo…", detail: "Comparing face embeddings in your collection." });
       const result = await requestJson("/api/search", {
@@ -460,9 +521,24 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ queries, threshold: Number(threshold), top_n: Number(topN) }),
       });
-      const matches = result.matches.map((match) => ({ path: match.path, faces: 1, score: match.score, source: "s3" }));
-      setHomeMessage({ text: `${matches.length} matching photo${matches.length === 1 ? "" : "s"} found.`, kind: "success" });
-      if (matches.length) openViewer(matches, 0, "home", collectionName);
+      const matches = result.matches.map((match) => ({
+        path: match.path,
+        faces: 1,
+        score: match.score,
+        source: match.source || (config?.storage === "s3" ? "s3" : "local"),
+      }));
+      if (matches.length > 0) {
+        setHomeMessage({
+          text: `Found ${matches.length} matching photo${matches.length === 1 ? "" : "s"}.`,
+          kind: "success",
+        });
+        openViewer(matches, 0, "home", collectionName);
+      } else {
+        setHomeMessage({
+          text: "No matching photos found in the index. (Try lowering the similarity threshold in Search settings below).",
+          kind: "info",
+        });
+      }
     } catch (error) {
       if (error.message !== "Search cancelled.") setHomeMessage({ text: error.message, kind: "error" });
     } finally {
@@ -515,8 +591,14 @@ export default function App() {
     setCameraOpen(true);
     setCameraError("");
     try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error("Camera API is not supported in this browser or insecure context.");
+      }
       streamRef.current = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false });
-      if (videoRef.current) videoRef.current.srcObject = streamRef.current;
+      if (videoRef.current) {
+        videoRef.current.srcObject = streamRef.current;
+        videoRef.current.play().catch(() => {});
+      }
     } catch (error) {
       setCameraError(`Camera unavailable: ${error.message}`);
     }
@@ -524,7 +606,10 @@ export default function App() {
 
   const capturePhoto = async () => {
     const video = videoRef.current;
-    if (!video?.videoWidth) return;
+    if (!video || !video.videoWidth || !video.videoHeight) {
+      setCameraError("Camera stream is not ready yet. Please wait a moment.");
+      return;
+    }
     const canvas = document.createElement("canvas");
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
@@ -759,7 +844,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  });
+  }, [screen, titleReadOnly, previewOpen]);
 
   useEffect(() => () => stopCamera(), []);
 
@@ -1189,15 +1274,38 @@ export default function App() {
           <button className="button button-green button-wide" type="button" disabled={Boolean(cameraError)} onClick={capturePhoto}><i className="ph ph-camera" aria-hidden="true"></i> Take photo</button>
         </div>
       </div>
-      <div className={`camera-modal${faceChoices ? "" : " hidden"}`} role="dialog" aria-modal="true">
+      <div className={`camera-modal${faceChoices ? "" : " hidden"}`} role="dialog" aria-modal="true" style={{ zIndex: 60 }}>
         <div className="camera-card face-picker-card">
           <button className="camera-close" type="button" aria-label="Cancel face selection" onClick={() => { faceResolve.current?.(null); setFaceChoices(null); }}><i className="ph ph-x" aria-hidden="true"></i></button>
           <h2>Which face should I look for?</h2>
-          <p>Choose one face from this reference photo.</p>
+          <p>
+            {faceChoices?.faces?.length || 0} faces found in this reference photo.
+          </p>
+          <div style={{ padding: "0 12px 12px 12px", display: "flex", flexDirection: "column", gap: "8px" }}>
+            <button
+              className="button button-green button-wide"
+              type="button"
+              onClick={() => {
+                const faces = Array.isArray(faceChoices) ? faceChoices : (faceChoices?.faces || []);
+                const allIndices = faces.map((f) => f.index);
+                faceResolve.current?.(allIndices);
+                setFaceChoices(null);
+              }}
+            >
+              <i className="ph ph-users" aria-hidden="true"></i> Search for all faces
+            </button>
+          </div>
           <div className="face-choice-list">
-            {(faceChoices || []).map((face, index) => (
-              <button key={face.index} type="button" onClick={() => { faceResolve.current?.(face.index); setFaceChoices(null); }}>
-                Face {index + 1}<br /><small>Position {face.bbox.x1}, {face.bbox.y1}</small>
+            {(Array.isArray(faceChoices) ? faceChoices : (faceChoices?.faces || [])).map((face, index) => (
+              <button
+                key={face.index}
+                type="button"
+                className="button button-outline"
+                style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "12px" }}
+                onClick={() => { faceResolve.current?.(face.index); setFaceChoices(null); }}
+              >
+                <i className="ph ph-user" style={{ fontSize: "24px", marginBottom: "4px" }} aria-hidden="true"></i>
+                <strong>Face {index + 1}</strong>
               </button>
             ))}
           </div>
