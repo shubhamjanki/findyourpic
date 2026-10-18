@@ -174,7 +174,7 @@ def create_app(
         return s3_storage().upload_check(contents, filename, content_type)
 
     @app.get("/api/s3/photos")
-    def s3_photos(page_size: int = 24, start_after: str | None = None) -> dict[str, Any]:
+    def s3_photos(page_size: int = 25, start_after: str | None = None) -> dict[str, Any]:
         require_s3_browsing()
         result = s3_storage().list_images(page_size=page_size, start_after=start_after)
         return result
@@ -224,7 +224,7 @@ def create_app(
     @app.get("/api/photos")
     def photos(
         page: int = 1,
-        page_size: int = 24,
+        page_size: int = 25,
         q: str = "",
         kind: str = "all",
         sort: str = "newest",
@@ -242,7 +242,7 @@ def create_app(
         )
 
     @app.get("/api/people")
-    def people(page: int = 1, page_size: int = 24, q: str = "") -> dict[str, Any]:
+    def people(page: int = 1, page_size: int = 25, q: str = "") -> dict[str, Any]:
         if page < 1 or page_size < 1:
             raise ValueError("Page and page size must be integers.")
         return service.list_people(

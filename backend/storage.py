@@ -108,7 +108,7 @@ class S3Storage:
         )
 
     def list_images(
-        self, *, page_size: int = 24, start_after: str | None = None
+        self, *, page_size: int = 25, start_after: str | None = None
     ) -> dict[str, Any]:
         if not 1 <= page_size <= 60:
             raise ValueError("page_size must be between 1 and 60.")

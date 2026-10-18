@@ -280,7 +280,7 @@ export default function App() {
     const page = reset ? 1 : photoPageRef.current + 1;
     try {
       const result = await requestJson(
-        `/api/photos?page=${page}&page_size=24&q=${encodeURIComponent(curQuery)}&kind=${encodeURIComponent(curKind)}&sort=${encodeURIComponent(curSort)}`,
+        `/api/photos?page=${page}&page_size=25&q=${encodeURIComponent(curQuery)}&kind=${encodeURIComponent(curKind)}&sort=${encodeURIComponent(curSort)}`,
       );
       if (requestId !== photoRequest.current) return;
       setPhotoTotal(result.total);
@@ -317,7 +317,7 @@ export default function App() {
     const startAfter = reset ? null : s3NextTokenRef.current;
     const tokenQuery = startAfter ? `&start_after=${encodeURIComponent(startAfter)}` : "";
     try {
-      const result = await requestJson(`/api/s3/photos?page_size=24${tokenQuery}`);
+      const result = await requestJson(`/api/s3/photos?page_size=25${tokenQuery}`);
       if (requestId !== photoRequest.current) return;
       const nextToken = result.next_token || null;
       setPhotos((current) => (reset ? result.photos : [...current, ...result.photos]));
@@ -357,7 +357,7 @@ export default function App() {
     const page = reset ? 1 : peoplePageRef.current;
     try {
       const result = await requestJson(
-        `/api/people?page=${page}&page_size=24&q=${encodeURIComponent(curQuery)}`,
+        `/api/people?page=${page}&page_size=25&q=${encodeURIComponent(curQuery)}`,
       );
       if (requestId !== peopleRequest.current) return;
       setPeopleTotal(result.total);
@@ -554,7 +554,7 @@ export default function App() {
       return;
     }
     try {
-      const result = await requestJson(`/api/people?page=1&page_size=24&q=${encodeURIComponent(term)}`);
+      const result = await requestJson(`/api/people?page=1&page_size=25&q=${encodeURIComponent(term)}`);
       const normalized = term.toLocaleLowerCase();
       const matchingPerson = result.people.find((person) => person.name.toLocaleLowerCase() === normalized)
         || (result.total === 1 ? result.people[0] : null);
