@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { downloadZip, faceUrl, imageUrl, requestJson } from "./api.js";
 import LazyImage from "./LazyImage.jsx";
+import Pagination from "./Pagination.jsx";
 
 function Notice({ message, kind }) {
   if (!message) return null;
@@ -198,6 +199,7 @@ export default function App() {
   const photoSortRef = useRef(photoSort);
   const s3NextTokenRef = useRef(s3NextToken);
   const s3HasMoreRef = useRef(s3HasMore);
+  const s3TokensRef = useRef([null]);
   const peopleRef = useRef(people);
   const peopleTotalRef = useRef(peopleTotal);
   const peoplePageRef = useRef(peoplePage);
@@ -250,42 +252,47 @@ export default function App() {
     })();
   }, [loadFeedback, loadTitle]);
 
-  const loadPhotos = useCallback(async ({ reset = false, query, kind, sort } = {}) => {
-    // Read current values from refs (stable — no dep-array churn)
+  const loadPhotos = useCallback(async ({ reset = false, page: targetPage, query, kind, sort } = {}) => {
     const curQuery = query !== undefined ? query : photoQueryRef.current;
     const curKind = kind !== undefined ? kind : photoFilterRef.current;
     const curSort = sort !== undefined ? sort : photoSortRef.current;
 
-    if (photoLoadingRef.current && !reset) return;
-    if (!reset && photosRef.current.length >= photoTotalRef.current && photoTotalRef.current > 0) return;
+    if (photoLoadingRef.current && !reset && targetPage === undefined) return;
 
     const requestId = ++photoRequest.current;
-    if (reset) {
-      setPhotos([]);
-      setPhotoPage(0);
-      setPhotoTotal(0);
-      setPhotoQuery(curQuery);
-      setPhotoFilter(curKind);
-      setPhotoSort(curSort);
-      // Sync refs immediately so subsequent reads are correct
-      photosRef.current = [];
-      photoTotalRef.current = 0;
-      photoPageRef.current = 0;
-      photoQueryRef.current = curQuery;
-      photoFilterRef.current = curKind;
-      photoSortRef.current = curSort;
-    }
     photoLoadingRef.current = true;
     setPhotoLoading(true);
-    const page = reset ? 1 : photoPageRef.current + 1;
+
+    const pageToLoad = targetPage !== undefined ? targetPage : (reset ? 1 : (photoPageRef.current || 1));
+
+    if (reset || targetPage !== undefined) {
+      setPhotoPage(pageToLoad);
+      photoPageRef.current = pageToLoad;
+      if (reset) {
+        setPhotos([]);
+        setPhotoTotal(0);
+        setPhotoQuery(curQuery);
+        setPhotoFilter(curKind);
+        setPhotoSort(curSort);
+        photosRef.current = [];
+        photoTotalRef.current = 0;
+        photoQueryRef.current = curQuery;
+        photoFilterRef.current = curKind;
+        photoSortRef.current = curSort;
+      }
+    }
     try {
       const result = await requestJson(
-        `/api/photos?page=${page}&page_size=25&q=${encodeURIComponent(curQuery)}&kind=${encodeURIComponent(curKind)}&sort=${encodeURIComponent(curSort)}`,
+        `/api/photos?page=${pageToLoad}&page_size=25&q=${encodeURIComponent(curQuery)}&kind=${encodeURIComponent(curKind)}&sort=${encodeURIComponent(curSort)}`,
       );
       if (requestId !== photoRequest.current) return;
       setPhotoTotal(result.total);
-      setPhotos((current) => (page > 1 ? [...current, ...result.photos] : result.photos));
-      setPhotoPage(page);
+      setPhotos(result.photos);
+      setPhotoPage(pageToLoad);
+      photoPageRef.current = pageToLoad;
+      photosRef.current = result.photos;
+      photoTotalRef.current = result.total;
+      window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (error) {
       if (requestId !== photoRequest.current) return;
       setHomeMessage({ text: error.message, kind: "error" });
@@ -298,32 +305,39 @@ export default function App() {
     }
   }, []);
 
-  const loadS3Photos = useCallback(async ({ reset = false } = {}) => {
-    if (photoLoadingRef.current && !reset) return;
-    if (!reset && !s3HasMoreRef.current) return;
+  const loadS3Photos = useCallback(async ({ reset = false, page: targetPage } = {}) => {
+    if (photoLoadingRef.current && !reset && targetPage === undefined) return;
 
     const requestId = ++photoRequest.current;
-    if (reset) {
-      setPhotos([]);
-      setPhotoTotal(0);
-      setS3NextToken(null);
-      setS3HasMore(true);
-      photosRef.current = [];
-      s3NextTokenRef.current = null;
-      s3HasMoreRef.current = true;
-    }
     photoLoadingRef.current = true;
     setPhotoLoading(true);
-    const startAfter = reset ? null : s3NextTokenRef.current;
+
+    let pageToLoad = targetPage !== undefined ? targetPage : (reset ? 1 : (photoPageRef.current || 1));
+    if (reset) {
+      s3TokensRef.current = [null];
+      pageToLoad = 1;
+      setPhotoPage(1);
+      photoPageRef.current = 1;
+      setPhotos([]);
+      photosRef.current = [];
+    }
+
+    const startAfter = s3TokensRef.current[pageToLoad - 1] || null;
     const tokenQuery = startAfter ? `&start_after=${encodeURIComponent(startAfter)}` : "";
     try {
       const result = await requestJson(`/api/s3/photos?page_size=25${tokenQuery}`);
       if (requestId !== photoRequest.current) return;
       const nextToken = result.next_token || null;
-      setPhotos((current) => (reset ? result.photos : [...current, ...result.photos]));
-      setPhotoTotal((current) => (reset ? result.photos.length : current + result.photos.length));
+      if (nextToken) {
+        s3TokensRef.current[pageToLoad] = nextToken;
+      }
+      setPhotos(result.photos);
+      photosRef.current = result.photos;
+      setPhotoPage(pageToLoad);
+      photoPageRef.current = pageToLoad;
       setS3NextToken(nextToken);
       setS3HasMore(Boolean(nextToken));
+      window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (error) {
       if (requestId !== photoRequest.current) return;
       setGalleryMessage({ text: error.message, kind: "error" });
@@ -335,35 +349,40 @@ export default function App() {
     }
   }, []);
 
-  const loadPeople = useCallback(async ({ reset = false, query } = {}) => {
+  const loadPeople = useCallback(async ({ reset = false, page: targetPage, query } = {}) => {
     const curQuery = query !== undefined ? query : peopleQueryRef.current;
+    const pageToLoad = targetPage !== undefined ? targetPage : (reset ? 1 : (peoplePageRef.current || 1));
 
-    if (peopleLoadingRef.current && !reset) return;
-    if (!reset && peopleRef.current.length >= peopleTotalRef.current && peopleTotalRef.current > 0) return;
+    if (peopleLoadingRef.current && !reset && targetPage === undefined) return;
 
     const requestId = ++peopleRequest.current;
-    if (reset) {
-      setPeople([]);
-      setPeoplePage(1);
-      setPeopleTotal(0);
-      setPeopleQuery(curQuery);
-      peopleRef.current = [];
-      peopleTotalRef.current = 0;
-      peoplePageRef.current = 1;
-      peopleQueryRef.current = curQuery;
-    }
     peopleLoadingRef.current = true;
     setPeopleLoading(true);
-    const page = reset ? 1 : peoplePageRef.current;
+
+    if (reset || targetPage !== undefined) {
+      setPeoplePage(pageToLoad);
+      peoplePageRef.current = pageToLoad;
+      if (reset) {
+        setPeople([]);
+        setPeopleTotal(0);
+        setPeopleQuery(curQuery);
+        peopleRef.current = [];
+        peopleTotalRef.current = 0;
+        peopleQueryRef.current = curQuery;
+      }
+    }
     try {
       const result = await requestJson(
-        `/api/people?page=${page}&page_size=25&q=${encodeURIComponent(curQuery)}`,
+        `/api/people?page=${pageToLoad}&page_size=25&q=${encodeURIComponent(curQuery)}`,
       );
       if (requestId !== peopleRequest.current) return;
       setPeopleTotal(result.total);
-      setPeople((current) => (page > 1 ? [...current, ...result.people] : result.people));
-      if (!reset && result.people.length) setPeoplePage(page + 1);
-      if (reset && result.people.length && result.people.length < result.total) setPeoplePage(2);
+      setPeople(result.people);
+      setPeoplePage(pageToLoad);
+      peoplePageRef.current = pageToLoad;
+      peopleRef.current = result.people;
+      peopleTotalRef.current = result.total;
+      window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (error) {
       if (requestId !== peopleRequest.current) return;
       setIndexMessage({ text: error.message, kind: "error" });
@@ -446,33 +465,7 @@ export default function App() {
     goScreen("home");
   };
 
-  useEffect(() => {
-    if (screen !== "all" || galleryPerson) return undefined;
-    const node = loadMoreRef.current;
-    if (!node) return undefined;
-    const observer = new IntersectionObserver((entries) => {
-      const hasMore = photoSource === "s3" ? s3HasMoreRef.current : photosRef.current.length < photoTotalRef.current;
-      if (entries.some((entry) => entry.isIntersecting) && !photoLoadingRef.current && hasMore) {
-        if (photoSource === "s3") loadS3Photos();
-        else loadPhotos();
-      }
-    }, { rootMargin: "320px 0px" });
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [galleryPerson, loadPhotos, loadS3Photos, photoSource, screen]);
 
-  useEffect(() => {
-    if (screen !== "collection") return undefined;
-    const node = peopleMoreRef.current;
-    if (!node) return undefined;
-    const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting) && !peopleLoadingRef.current && peopleRef.current.length < peopleTotalRef.current) {
-        loadPeople();
-      }
-    }, { rootMargin: "320px 0px" });
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [loadPeople, screen]);
 
   const chooseFace = (faces, data) => {
     if (!faces || faces.length === 0) {
@@ -1028,11 +1021,23 @@ export default function App() {
               <span>{emptyPhotos}</span>
             </div>
           ) : null}
-          <div ref={loadMoreRef} className={`loading-panel${galleryPerson || !hasMorePhotos ? " hidden" : ""}`}>
-            <span className={`spinner${photoLoading ? "" : " hidden"}`}></span>
-            <span>{photoLoading ? "Loading more photos…" : "Scroll to load more"}</span>
-          </div>
-          {photos.length > 0 && !hasMorePhotos ? <div className="end-of-photos">You’ve reached the end.</div> : null}
+          {!galleryPerson && (
+            <Pagination
+              currentPage={photoPage || 1}
+              totalItems={photoSource === "s3" ? 0 : photoTotal}
+              pageSize={25}
+              hasNext={photoSource === "s3" ? s3HasMore : (photoPage || 1) * 25 < photoTotal}
+              hasPrev={(photoPage || 1) > 1}
+              isLoading={photoLoading}
+              onPageChange={(targetPage) => {
+                if (photoSource === "s3") {
+                  loadS3Photos({ page: targetPage });
+                } else {
+                  loadPhotos({ page: targetPage });
+                }
+              }}
+            />
+          )}
         </section>
 
         <section className={`screen content-screen${screen === "collection" ? "" : " hidden"}`}>
@@ -1129,18 +1134,17 @@ export default function App() {
               ))
             ) : null}
           </div>
-          <div ref={peopleMoreRef} className={`loading-panel${people.length >= peopleTotal ? " hidden" : ""}`}>
-            <span className={`spinner${peopleLoading ? "" : " hidden"}`}></span>
-            <span>{peopleLoading ? "Loading more people…" : "Scroll to load more"}</span>
-          </div>
-          {people.length > 0 && people.length >= peopleTotal ? <div className="end-of-photos">You’ve reached the end.</div> : null}
-          {people.length === 0 && !peopleLoading ? (
-            <div className="empty-panel">
-              <i className="ph ph-users-three" aria-hidden="true"></i>
-              <strong>No faces indexed yet</strong>
-              <span>Update your index to build your collection.</span>
-            </div>
-          ) : null}
+          <Pagination
+            currentPage={peoplePage || 1}
+            totalItems={peopleTotal}
+            pageSize={25}
+            hasNext={(peoplePage || 1) * 25 < peopleTotal}
+            hasPrev={(peoplePage || 1) > 1}
+            isLoading={peopleLoading}
+            onPageChange={(targetPage) => {
+              loadPeople({ page: targetPage });
+            }}
+          />
         </section>
 
         <section className={`screen viewer-screen${screen === "viewer" ? "" : " hidden"}`}>

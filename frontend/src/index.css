@@ -1471,3 +1471,98 @@ body:has(#screen-viewer:not(.hidden)) .bottom-nav {
   .word { opacity: 1; }
   .skeleton-shimmer { animation: none !important; }
 }
+
+/* ---------- Pagination ---------- */
+.pagination-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-150);
+  margin-top: var(--s-300);
+  padding: var(--s-150) var(--s-200);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+}
+.pagination-info {
+  font-size: 14px;
+  color: var(--muted);
+}
+.pagination-info strong {
+  color: var(--text);
+  font-weight: 600;
+}
+.pagination-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--s-75);
+}
+.pagination-pages {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.pagination-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  background: var(--raised);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.pagination-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--surface);
+}
+.pagination-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.pagination-number {
+  min-width: 36px;
+  height: 36px;
+  padding: 0 8px;
+  display: grid;
+  place-items: center;
+  background: var(--raised);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.pagination-number:hover:not(:disabled):not(.active) {
+  border-color: var(--border-light, #444);
+  background: var(--surface);
+}
+.pagination-number.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #000000;
+  font-weight: 700;
+}
+.pagination-ellipsis {
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+@media (max-width: 640px) {
+  .pagination-bar {
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+  }
+  .pagination-pages {
+    display: none;
+  }
+}
