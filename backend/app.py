@@ -51,6 +51,7 @@ logging.basicConfig(
 )
 LOGGER = logging.getLogger("face_search.api")
 MAX_REQUEST_BYTES = 64 * 1024 * 1024
+MAX_PERSON_THUMBNAIL_BYTES = 8 * 1024 * 1024
 
 
 def _error_response(status: int, message: str) -> JSONResponse:
@@ -78,6 +79,8 @@ def create_app(
     app.state.thumb_run_lock = threading.Lock()
     app.state.thumb_job_lock = threading.Lock()
     app.state.thumb_job = None
+    app.state.face_backend_lock = threading.Lock()
+    app.state.face_backends = {}
     cors_origins = list(settings.cors_origins)
     for origin in [
         "https://findyourpic.vercel.app",
@@ -100,6 +103,15 @@ def create_app(
 
     def current_settings() -> Settings:
         return app.state.settings
+
+
+    def face_backend(name: str) -> Any:
+        with app.state.face_backend_lock:
+            backend = app.state.face_backends.get(name)
+            if backend is None:
+                backend = create_backend(name)
+                app.state.face_backends[name] = backend
+            return backend
 
 
     def s3_storage():
@@ -525,7 +537,7 @@ def create_app(
             with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as image_file:
                 image_file.write(contents)
                 temporary_path = Path(image_file.name)
-            faces = query_face_embeddings(temporary_path, create_backend(backend_name))
+            faces = query_face_embeddings(temporary_path, face_backend(backend_name))
         finally:
             if temporary_path is not None:
                 temporary_path.unlink(missing_ok=True)
@@ -596,6 +608,52 @@ def create_app(
             raise ValueError("Invalid person group.")
         saved = service.set_person_name(current_settings().database, key, name)
         return {"key": key, "name": saved}
+
+    @app.post("/api/person-thumbnail")
+    def upload_person_thumbnail(payload: dict[str, Any]) -> dict[str, Any]:
+        key, encoded = payload.get("key"), payload.get("data")
+        if not isinstance(key, str) or not key or not isinstance(encoded, str):
+            raise ValueError("Provide a person group and an image.")
+        if len(encoded) > (MAX_PERSON_THUMBNAIL_BYTES * 4 // 3) + 4:
+            raise ValueError("The image must be 8 MB or smaller.")
+        try:
+            contents = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("The uploaded image data is invalid.") from exc
+        if not contents or len(contents) > MAX_PERSON_THUMBNAIL_BYTES:
+            raise ValueError("The image must be non-empty and 8 MB or smaller.")
+        version = service.save_person_thumbnail(
+            current_settings().database, key, contents
+        )
+        return {"key": key, "thumbnail_version": version}
+
+    @app.get("/api/person-thumbnail")
+    def person_thumbnail(key: str = "") -> Response:
+        if not key or "#" not in key:
+            raise ValueError("Invalid person group.")
+        path, raw_face_index = key.rsplit("#", 1)
+        try:
+            face_index = int(raw_face_index)
+        except ValueError as exc:
+            raise ValueError("Invalid person group.") from exc
+        with sqlite3.connect(current_settings().database) as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM faces WHERE path = ? AND face_index = ?",
+                (path, face_index),
+            ).fetchone()
+        if not exists:
+            raise HTTPException(status_code=404, detail="Person group not found.")
+        thumbnail_path = service.person_thumbnail_path(key)
+        if not thumbnail_path.is_file():
+            raise HTTPException(status_code=404, detail="Custom person thumbnail not found.")
+        return Response(
+            content=thumbnail_path.read_bytes(),
+            media_type="image/webp",
+            headers={
+                "X-Content-Type-Options": "nosniff",
+                "Cache-Control": "public, max-age=31536000, immutable",
+            },
+        )
 
     @app.post("/api/feedback")
     def set_feedback(payload: dict[str, Any]) -> dict[str, Any]:

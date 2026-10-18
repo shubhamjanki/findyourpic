@@ -122,7 +122,7 @@ The backend runs FastAPI with InsightFace and ONNX Runtime. Because InsightFace 
    | Variable | Value | Description |
    | --- | --- | --- |
    | `FACE_SEARCH_DB` | `/data/index.sqlite3` | SQLite index on persistent disk |
-   | `FACE_THUMBNAIL_DIR` | `/data/face_thumbnails` | Generated face thumbnails on persistent disk |
+   | `FACE_THUMBNAIL_DIR` | `/data/face_thumbnails` | Generated and user-uploaded person thumbnails on persistent disk |
    | `PHOTO_ROOT` | `/data/photos` | Photo directory on persistent disk |
    | `HOME` | `/data` | Sets InsightFace model cache to `/data/.insightface` |
    | `STORAGE_BACKEND` | `local` | Local disk storage (or `s3`) |
@@ -130,7 +130,7 @@ The backend runs FastAPI with InsightFace and ONNX Runtime. Because InsightFace 
    | `PORT` | `8000` | Render assigns this automatically |
 
 7. **Health Check Path**: `/api/health`
-8. Deploy the service, then open **Train** in the app and choose **Generate photo & face thumbnails**. This stores face-group previews on the backend's `/data` disk so they are served from Render and survive redeploys.
+8. Deploy the service. The **Train** screen can pre-generate face-group previews; users can also upload a custom thumbnail from each person card in **Collection**. Both are stored on the backend's `/data` disk so they are served from Render and survive redeploys.
 
 ---
 

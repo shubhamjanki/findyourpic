@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { downloadZip, faceUrl, imageUrl, requestJson } from "./api.js";
+import { downloadZip, imageUrl, personThumbnailUrl, requestJson } from "./api.js";
 import LazyImage from "./LazyImage.jsx";
 import Pagination from "./Pagination.jsx";
 
@@ -160,6 +160,7 @@ export default function App() {
   const [peoplePage, setPeoplePage] = useState(1);
   const [peopleQuery, setPeopleQuery] = useState("");
   const [peopleLoading, setPeopleLoading] = useState(false);
+  const [thumbnailUploadKey, setThumbnailUploadKey] = useState(null);
   const [galleryPerson, setGalleryPerson] = useState(null);
   const [selected, setSelected] = useState(() => new Set());
   const [downloadBusy, setDownloadBusy] = useState(false);
@@ -646,6 +647,33 @@ export default function App() {
       setIndexMessage({ text: `Saved person name: ${result.name}`, kind: "success" });
     } catch (error) {
       setIndexMessage({ text: error.message, kind: "error" });
+    }
+  };
+
+  const uploadPersonThumbnail = async (person, file) => {
+    if (file.size > 8 * 1024 * 1024) {
+      setIndexMessage({ text: "Choose an image that is 8 MB or smaller.", kind: "error" });
+      return;
+    }
+    setThumbnailUploadKey(person.key);
+    setIndexMessage(null);
+    try {
+      const data = await readImageBase64(file);
+      const result = await requestJson("/api/person-thumbnail", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: person.key, data }),
+      });
+      setPeople((current) => current.map((item) => (
+        item.key === person.key
+          ? { ...item, custom_thumbnail_version: result.thumbnail_version }
+          : item
+      )));
+      setIndexMessage({ text: `Updated thumbnail for ${person.name}.`, kind: "success" });
+    } catch (error) {
+      setIndexMessage({ text: error.message, kind: "error" });
+    } finally {
+      setThumbnailUploadKey(null);
     }
   };
 
@@ -1199,7 +1227,7 @@ export default function App() {
               <article className="person-card" key={person.key}>
                 <button className="person-open" type="button" aria-label={`Browse photos of ${person.name}`} onClick={() => openPersonGallery(person)}>
                   <span className="person-avatar">
-                    <LazyImage src={faceUrl(person.preview)} alt="" isAvatar />
+                    <LazyImage src={personThumbnailUrl(person)} alt="" isAvatar />
                   </span>
                 </button>
                 <div className="person-label">
@@ -1207,6 +1235,25 @@ export default function App() {
                 </div>
                 <div className="person-actions">
                   <button className="person-preview-button" type="button" onClick={() => openPersonGallery(person)}>Open gallery</button>
+                  <button
+                    className="person-thumbnail-button"
+                    type="button"
+                    disabled={thumbnailUploadKey === person.key}
+                    onClick={(event) => event.currentTarget.nextElementSibling?.click()}
+                  >
+                    {thumbnailUploadKey === person.key ? "Uploading..." : "Change thumbnail"}
+                  </button>
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp,image/bmp"
+                    aria-label={`Upload a custom thumbnail for ${person.name}`}
+                    hidden
+                    onChange={(event) => {
+                      const file = event.currentTarget.files?.[0];
+                      event.currentTarget.value = "";
+                      if (file) uploadPersonThumbnail(person, file);
+                    }}
+                  />
                 </div>
                 <span className="person-count">{person.count} photo{person.count === 1 ? "" : "s"}</span>
               </article>

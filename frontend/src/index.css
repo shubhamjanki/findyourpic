@@ -817,6 +817,30 @@ details[open] > summary { margin-bottom: var(--s-200); }
   transform: scale(1.06);
 }
 
+.person-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--s-50);
+}
+
+.person-preview-button,
+.person-thumbnail-button {
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  background: var(--surface);
+  color: var(--text);
+  padding: var(--s-50) var(--s-75);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.person-thumbnail-button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
 .stage-img-wrapper {
   position: relative;
   display: flex;

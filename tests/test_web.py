@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import sqlite3
 import threading
 import time
@@ -52,6 +53,69 @@ def test_people_search_matches_custom_names_case_insensitively(tmp_path: Path) -
 
     assert result["total"] == 1
     assert result["people"][0]["name"] == "Aarav"
+
+
+def test_person_thumbnail_upload_is_saved_and_served(
+    monkeypatch, tmp_path: Path
+) -> None:
+    collection = tmp_path / "photos"
+    _write_image(collection / "first.jpg", (255, 0, 0))
+    database = tmp_path / "index.sqlite3"
+    index_directory(collection, database, backend=FakeBackend(), show_progress=False)
+    thumbnail_dir = tmp_path / "face-thumbnails"
+    monkeypatch.setattr(backend_app.service, "FACE_THUMB_DIR", thumbnail_dir)
+    client = _client(database, collection)
+    person = client.get("/api/people").json()["people"][0]
+
+    upload = BytesIO()
+    Image.new("RGB", (32, 24), (0, 128, 255)).save(upload, format="PNG")
+    response = client.post(
+        "/api/person-thumbnail",
+        json={
+            "key": person["key"],
+            "data": base64.b64encode(upload.getvalue()).decode("ascii"),
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["key"] == person["key"]
+    assert response.json()["thumbnail_version"]
+
+    updated_person = client.get("/api/people").json()["people"][0]
+    assert updated_person["custom_thumbnail_version"] == response.json()["thumbnail_version"]
+    image = client.get("/api/person-thumbnail", params={"key": person["key"]})
+    assert image.status_code == 200
+    assert image.headers["content-type"] == "image/webp"
+    assert Image.open(BytesIO(image.content)).size == (32, 24)
+
+
+def test_detect_reuses_face_backend_for_camera_search(
+    monkeypatch, tmp_path: Path
+) -> None:
+    collection = tmp_path / "photos"
+    collection.mkdir()
+    client = _client(tmp_path / "index.sqlite3", collection)
+    backend = FakeBackend()
+    created: list[str] = []
+
+    def create_backend(name: str) -> FakeBackend:
+        created.append(name)
+        return backend
+
+    monkeypatch.setattr(backend_app, "create_backend", create_backend)
+    upload = BytesIO()
+    Image.new("RGB", (20, 12), (200, 100, 50)).save(upload, format="JPEG")
+    payload = {
+        "name": "camera.jpg",
+        "data": base64.b64encode(upload.getvalue()).decode("ascii"),
+        "backend": "insightface",
+    }
+
+    first = client.post("/api/detect", json=payload)
+    second = client.post("/api/detect", json=payload)
+
+    assert first.status_code == second.status_code == 200
+    assert created == ["insightface"]
 
 
 def test_download_zip_contains_selected_photos_and_preserves_folders(tmp_path: Path) -> None:

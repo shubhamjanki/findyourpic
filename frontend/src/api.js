@@ -1,7 +1,15 @@
 const API_BASE = import.meta.env.VITE_API_BASE || "";
 
 export async function requestJson(path, options = {}) {
-  const response = await fetch(`${API_BASE}${path}`, options);
+  let response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, options);
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new Error("Could not connect to the backend. It may be restarting or unreachable; try again shortly.");
+    }
+    throw error;
+  }
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     throw new Error(payload.error || `Request failed (${response.status}).`);
@@ -21,6 +29,14 @@ export function faceUrl(face) {
   const box = face.bbox;
   return `${API_BASE}/api/face?path=${encodeURIComponent(face.path)}`
     + `&x1=${box.x1}&y1=${box.y1}&x2=${box.x2}&y2=${box.y2}`;
+}
+
+export function personThumbnailUrl(person) {
+  if (person.custom_thumbnail_version) {
+    return `${API_BASE}/api/person-thumbnail?key=${encodeURIComponent(person.key)}`
+      + `&v=${person.custom_thumbnail_version}`;
+  }
+  return faceUrl(person.preview);
 }
 
 export async function downloadZip(paths) {

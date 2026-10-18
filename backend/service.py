@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import sqlite3
+import tempfile
 import threading
 import time
 import uuid
@@ -14,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 # ---------------------------------------------------------------------------
 # Disk thumbnail cache directory
@@ -223,6 +224,66 @@ def ensure_custom_tables(connection: sqlite3.Connection) -> None:
     connection.execute(
         "CREATE TABLE IF NOT EXISTS ui_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
     )
+
+
+def person_thumbnail_path(person_key: str) -> Path:
+    thumbnail_key = hashlib.sha256(person_key.encode("utf-8")).hexdigest()
+    return FACE_THUMB_DIR / "custom" / f"{thumbnail_key}.webp"
+
+
+def person_thumbnail_version(person_key: str) -> str | None:
+    try:
+        return str(person_thumbnail_path(person_key).stat().st_mtime_ns)
+    except FileNotFoundError:
+        return None
+
+
+def save_person_thumbnail(database: Path, person_key: str, image_bytes: bytes) -> str:
+    from io import BytesIO
+
+    if "#" not in person_key:
+        raise ValueError("Invalid person group.")
+    path, raw_face_index = person_key.rsplit("#", 1)
+    try:
+        face_index = int(raw_face_index)
+    except ValueError as exc:
+        raise ValueError("Invalid person group.") from exc
+    with sqlite3.connect(database) as connection:
+        exists = connection.execute(
+            "SELECT 1 FROM faces WHERE path = ? AND face_index = ?",
+            (path, face_index),
+        ).fetchone()
+    if not exists:
+        raise ValueError("Person group does not exist in the current collection.")
+
+    try:
+        with Image.open(BytesIO(image_bytes)) as source:
+            if source.format not in {"JPEG", "PNG", "WEBP", "BMP"}:
+                raise ValueError("Use a JPG, PNG, WEBP, or BMP image.")
+            if source.width * source.height > 40_000_000:
+                raise ValueError("The image must be 40 megapixels or smaller.")
+            image = ImageOps.exif_transpose(source).convert("RGB")
+            image.thumbnail((512, 512), Image.Resampling.LANCZOS)
+            output = BytesIO()
+            image.save(output, format="WEBP", quality=85, method=6)
+            thumbnail_bytes = output.getvalue()
+    except (OSError, ValueError, UnidentifiedImageError) as exc:
+        raise ValueError("The uploaded file is not a supported image.") from exc
+
+    destination = person_thumbnail_path(person_key)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=destination.parent, suffix=".tmp", delete=False
+        ) as temporary_file:
+            temporary_file.write(thumbnail_bytes)
+            temporary_path = Path(temporary_file.name)
+        temporary_path.replace(destination)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+    return str(destination.stat().st_mtime_ns)
 
 
 def storage_for(settings: Settings) -> LocalStorage:
@@ -683,7 +744,11 @@ def list_people(database: Path, *, page: int, page_size: int, query: str) -> dic
         ).fetchall()) if table_exists(connection, "person_labels") else {}
 
     people = [
-        {**p, "name": labels.get(p["key"], p["name"])}
+        {
+            **p,
+            "name": labels.get(p["key"], p["name"]),
+            "custom_thumbnail_version": person_thumbnail_version(p["key"]),
+        }
         for p in all_people
     ]
 
