@@ -436,17 +436,40 @@ def create_app(
         def run_thumbnails() -> None:
             try:
                 store = s3_storage()
-                items = store.list_all_keys()
+                items: list[tuple[str, Any]] = [
+                    ("photo", item["key"]) for item in store.list_all_keys()
+                ]
+                people_page = 1
+                while True:
+                    people_result = service.list_people(
+                        current_settings().database,
+                        page=people_page,
+                        page_size=service.MAX_PAGE_SIZE,
+                        query="",
+                    )
+                    items.extend(("face", person["preview"]) for person in people_result["people"])
+                    if people_page * service.MAX_PAGE_SIZE >= people_result["total"]:
+                        break
+                    people_page += 1
+
                 total = len(items)
                 update_thumb_job(total=total)
                 ok = errors = 0
                 for i, item in enumerate(items, 1):
-                    key = item["key"]
                     try:
-                        service.get_or_create_thumbnail(key, store)
+                        kind, value = item
+                        if kind == "photo":
+                            service.get_or_create_thumbnail(value, store)
+                        else:
+                            bbox = value["bbox"]
+                            service.get_or_create_face_thumbnail(
+                                value["path"],
+                                (bbox["x1"], bbox["y1"], bbox["x2"], bbox["y2"]),
+                                store,
+                            )
                         ok += 1
                     except Exception as exc:
-                        LOGGER.warning("Thumbnail failed for %s: %s", key, exc)
+                        LOGGER.warning("Thumbnail generation failed for %s: %s", item, exc)
                         errors += 1
                     update_thumb_job(completed=i, ok=ok, errors=errors)
                 update_thumb_job(status="completed", completed=total, ok=ok, errors=errors)

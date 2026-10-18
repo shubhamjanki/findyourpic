@@ -22,7 +22,9 @@ from PIL import Image, ImageOps
 # Thumbnails are written here on first generation and served from disk
 # on subsequent requests — no S3 download needed for the gallery view.
 THUMB_DIR: Path = Path(__file__).parent / "thumbnails"
-FACE_THUMB_DIR: Path = Path(__file__).parent / "face_thumbnails"
+FACE_THUMB_DIR: Path = Path(
+    os.environ.get("FACE_THUMBNAIL_DIR", str(Path(__file__).parent / "face_thumbnails"))
+)
 ALT_THUMB_DIR: Path = Path("/app/thumbnails")
 ALT_FACE_THUMB_DIR: Path = Path("/app/face_thumbnails")
 

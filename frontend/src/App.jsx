@@ -720,7 +720,7 @@ export default function App() {
         else await new Promise((resolve) => window.setTimeout(resolve, 750));
       }
       setThumbMessage({
-        text: `Done! ${result.ok} thumbnails generated, ${result.errors} errors.`,
+        text: `Done! ${result.ok} photo and face thumbnails generated, ${result.errors} errors.`,
         kind: result.errors ? "error" : "success",
       });
     } catch (error) {
@@ -760,7 +760,7 @@ export default function App() {
             if (current.status === "failed") throw new Error(current.error || "Thumbnail generation failed.");
             if (current.status === "completed") {
               setThumbMessage({
-                text: `Done! ${current.ok} thumbnails generated, ${current.errors} errors.`,
+                text: `Done! ${current.ok} photo and face thumbnails generated, ${current.errors} errors.`,
                 kind: current.errors ? "error" : "success",
               });
               break;
@@ -1399,19 +1399,19 @@ export default function App() {
             <div className="train-card-header">
               <i className="ph ph-images" aria-hidden="true" style={{ fontSize: "1.5rem", color: "var(--accent)" }} />
               <div>
-                <strong>Generate Thumbnails</strong>
-                <p>Pre-generate WebP thumbnails for all S3 photos. Already-generated ones are skipped.</p>
+                <strong>Generate Photo &amp; Face Thumbnails</strong>
+                <p>Pre-generate WebP thumbnails for S3 photos and indexed face groups. Already-generated ones are reused.</p>
               </div>
             </div>
             <div style={{ marginTop: "0.75rem" }}>
               <button className="button button-green" type="button" disabled={thumbBusy || indexBusy} onClick={generateThumbnails}>
-                {thumbBusy ? <><span className="spinner" /> Generating...</> : <><i className="ph ph-image" aria-hidden="true" /> Start thumbnail generation</>}
+                {thumbBusy ? <><span className="spinner" /> Generating...</> : <><i className="ph ph-image" aria-hidden="true" /> Generate photo &amp; face thumbnails</>}
               </button>
             </div>
             {thumbBusy && thumbProgress && thumbProgress.total > 0 ? (
               <div className="index-progress" role="status" aria-live="polite" aria-busy="true">
                 <div className="index-progress-heading">
-                  <span>Thumbnails: {thumbProgress.completed} of {thumbProgress.total} ({Math.floor((thumbProgress.completed / thumbProgress.total) * 100)}%)</span>
+                  <span>Thumbnail items: {thumbProgress.completed} of {thumbProgress.total} ({Math.floor((thumbProgress.completed / thumbProgress.total) * 100)}%)</span>
                   <span>{thumbProgress.completed >= 2 && thumbProgress.completed < thumbProgress.total
                     ? formatTimeRemaining(((Date.now() - thumbProgress.startedAt) / 1000 / thumbProgress.completed) * (thumbProgress.total - thumbProgress.completed))
                     : "Estimating..."}</span>

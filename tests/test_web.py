@@ -11,9 +11,11 @@ from PIL import Image
 from fastapi.testclient import TestClient
 
 try:
+    from backend import app as backend_app
     from backend.app import create_app
     from backend.service import ensure_custom_tables
 except ImportError:
+    from apps.backend import app as backend_app
     from apps.backend.app import create_app
     from apps.backend.service import ensure_custom_tables
 from face_search.index import IndexReport, index_directory
@@ -147,3 +149,65 @@ def test_index_job_reports_progress_and_completion(
         assert result["report"]["indexed"] == 1
     finally:
         continue_index.set()
+
+
+def test_thumbnail_job_generates_photo_and_face_thumbnails(
+    monkeypatch, tmp_path: Path
+) -> None:
+    collection = tmp_path / "photos"
+    image_path = collection / "first.jpg"
+    _write_image(image_path, (255, 0, 0))
+    database = tmp_path / "index.sqlite3"
+    thumbnails = tmp_path / "thumbnails"
+    face_thumbnails = tmp_path / "face-thumbnails"
+
+    class FakeStorage:
+        def list_all_keys(self) -> list[dict[str, str]]:
+            return [{"key": "first.jpg"}]
+
+        def read_image(self, _key: str) -> bytes:
+            return image_path.read_bytes()
+
+    monkeypatch.setattr(backend_app, "create_s3_storage", FakeStorage)
+    monkeypatch.setattr(
+        backend_app.service,
+        "list_people",
+        lambda *_args, **_kwargs: {
+            "people": [{
+                "preview": {
+                    "path": "first.jpg",
+                    "bbox": {"x1": 2, "y1": 2, "x2": 10, "y2": 10},
+                },
+            }],
+            "total": 1,
+        },
+    )
+    monkeypatch.setattr(backend_app.service, "THUMB_DIR", thumbnails)
+    monkeypatch.setattr(backend_app.service, "FACE_THUMB_DIR", face_thumbnails)
+    monkeypatch.setattr(backend_app.service, "ALT_THUMB_DIR", tmp_path / "no-alt-thumbnails")
+    monkeypatch.setattr(
+        backend_app.service, "ALT_FACE_THUMB_DIR", tmp_path / "no-alt-face-thumbnails"
+    )
+
+    client = TestClient(create_app(database=database, photo_root=collection))
+    start = client.post("/api/thumbnails/start", json={})
+    assert start.status_code == 202
+    job_id = start.json()["job_id"]
+
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        result = client.get(f"/api/thumbnails/status/{job_id}").json()
+        if result["status"] in ("completed", "failed"):
+            break
+        time.sleep(0.01)
+
+    assert result == {
+        "job_id": job_id,
+        "status": "completed",
+        "completed": 2,
+        "total": 2,
+        "ok": 2,
+        "errors": 0,
+    }
+    assert len(list(thumbnails.glob("*.webp"))) == 1
+    assert len(list(face_thumbnails.glob("*.webp"))) == 1

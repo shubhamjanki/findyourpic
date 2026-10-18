@@ -24,6 +24,7 @@ COPY index.sqlite3 /data/index.sqlite3
 ENV PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app \
     FACE_SEARCH_DB=/data/index.sqlite3 \
+    FACE_THUMBNAIL_DIR=/data/face_thumbnails \
     STORAGE_BACKEND=s3 \
     S3_BROWSE_ENABLED=true \
     INSIGHTFACE_MODEL=buffalo_s \
