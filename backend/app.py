@@ -75,6 +75,9 @@ def create_app(
     app.state.index_run_lock = threading.Lock()
     app.state.index_job_lock = threading.Lock()
     app.state.index_job = None
+    app.state.thumb_run_lock = threading.Lock()
+    app.state.thumb_job_lock = threading.Lock()
+    app.state.thumb_job = None
     cors_origins = list(settings.cors_origins)
     for origin in [
         "https://findyourpic.vercel.app",
@@ -183,11 +186,11 @@ def create_app(
     def s3_image(key: str = "", thumb: bool = False) -> Response:
         try:
             require_s3_browsing()
-            contents = s3_storage().read_image(key)
             if thumb:
-                contents = service.thumbnail_from_bytes(key, contents, max_dim=500)
-                media_type = "image/jpeg"
+                contents = service.get_or_create_thumbnail(key, s3_storage(), max_dim=500)
+                media_type = "image/webp"
             else:
+                contents = s3_storage().read_image(key)
                 media_type = mimetypes.guess_type(key)[0] or "application/octet-stream"
             return Response(
                 content=contents,
@@ -255,11 +258,11 @@ def create_app(
     @app.get("/api/image")
     def image(path: str = "", thumb: bool = False) -> Response:
         try:
-            contents = s3_storage().read_image(path)
             if thumb:
-                contents = service.thumbnail_from_bytes(path, contents, max_dim=500)
-                media_type = "image/jpeg"
+                contents = service.get_or_create_thumbnail(path, s3_storage(), max_dim=500)
+                media_type = "image/webp"
             else:
+                contents = s3_storage().read_image(path)
                 media_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
             return Response(
                 content=contents,
@@ -273,16 +276,15 @@ def create_app(
     @app.get("/api/face")
     def face(path: str = "", x1: str = "", y1: str = "", x2: str = "", y2: str = "") -> Response:
         try:
-            image_bytes = s3_storage().read_image(path)
             try:
                 box = (int(x1), int(y1), int(x2), int(y2))
             except ValueError as exc:
                 raise ValueError("Invalid face bounding box.") from exc
-            body = service.crop_face_from_bytes(image_bytes, box)
+            body = service.get_or_create_face_thumbnail(path, box, s3_storage())
             return Response(
                 content=body,
-                media_type="image/jpeg",
-                headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "private, max-age=300"},
+                media_type="image/webp",
+                headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "public, max-age=86400"},
             )
         except Exception as exc:
             LOGGER.exception("face crop failed for %s: %s", path, exc)
@@ -326,6 +328,10 @@ def create_app(
     def start_index(payload: dict[str, Any]) -> dict[str, str]:
         backend, workers = index_options(payload)
         if not app.state.index_run_lock.acquire(blocking=False):
+            with app.state.index_job_lock:
+                current_job = app.state.index_job
+            if current_job and current_job.get("status") == "running":
+                return {"job_id": current_job["job_id"]}
             raise HTTPException(status_code=409, detail="Indexing is already in progress.")
 
         job_id = uuid4().hex
@@ -385,12 +391,92 @@ def create_app(
             raise
         return {"job_id": job_id}
 
+    @app.get("/api/index/status")
+    def current_index_status() -> dict[str, Any]:
+        with app.state.index_job_lock:
+            job = app.state.index_job
+            if job is None:
+                return {"status": "idle"}
+            return dict(job)
+
     @app.get("/api/index/status/{job_id}")
     def index_status(job_id: str) -> dict[str, Any]:
         with app.state.index_job_lock:
             job = app.state.index_job
             if job is None or job["job_id"] != job_id:
                 raise HTTPException(status_code=404, detail="Indexing job not found.")
+            return dict(job)
+
+    @app.post("/api/thumbnails/start", status_code=202)
+    def start_thumbnails(_payload: dict[str, Any] = {}) -> dict[str, str]:
+        if not app.state.thumb_run_lock.acquire(blocking=False):
+            with app.state.thumb_job_lock:
+                current_job = app.state.thumb_job
+            if current_job and current_job.get("status") == "running":
+                return {"job_id": current_job["job_id"]}
+            raise HTTPException(status_code=409, detail="Thumbnail generation is already in progress.")
+
+        job_id = uuid4().hex
+        with app.state.thumb_job_lock:
+            app.state.thumb_job = {
+                "job_id": job_id,
+                "status": "running",
+                "completed": 0,
+                "total": 0,
+                "ok": 0,
+                "errors": 0,
+            }
+
+        def update_thumb_job(**updates: Any) -> None:
+            with app.state.thumb_job_lock:
+                job = app.state.thumb_job
+                if job is not None and job["job_id"] == job_id:
+                    app.state.thumb_job = {**job, **updates}
+
+        def run_thumbnails() -> None:
+            try:
+                store = s3_storage()
+                items = store.list_all_keys()
+                total = len(items)
+                update_thumb_job(total=total)
+                ok = errors = 0
+                for i, item in enumerate(items, 1):
+                    key = item["key"]
+                    try:
+                        service.get_or_create_thumbnail(key, store)
+                        ok += 1
+                    except Exception as exc:
+                        LOGGER.warning("Thumbnail failed for %s: %s", key, exc)
+                        errors += 1
+                    update_thumb_job(completed=i, ok=ok, errors=errors)
+                update_thumb_job(status="completed", completed=total, ok=ok, errors=errors)
+            except BaseException as exc:
+                LOGGER.exception("Thumbnail job %s failed.", job_id)
+                update_thumb_job(status="failed", error=str(exc))
+            finally:
+                app.state.thumb_run_lock.release()
+
+        try:
+            threading.Thread(target=run_thumbnails, name=f"thumbs-{job_id}", daemon=True).start()
+        except Exception:
+            app.state.thumb_run_lock.release()
+            raise
+        return {"job_id": job_id}
+
+    @app.get("/api/thumbnails/status")
+    def current_thumbnails_status() -> dict[str, Any]:
+        with app.state.thumb_job_lock:
+            job = app.state.thumb_job
+            if job is None:
+                return {"status": "idle"}
+            return dict(job)
+
+    @app.get("/api/thumbnails/status/{job_id}")
+    def thumbnails_status(job_id: str) -> dict[str, Any]:
+        with app.state.thumb_job_lock:
+            job = app.state.thumb_job
+            if job is None or job["job_id"] != job_id:
+                raise HTTPException(status_code=404, detail="Thumbnail job not found.")
             return dict(job)
 
     @app.post("/api/detect")

@@ -62,6 +62,27 @@ class InsightFaceBackend(FaceBackend):
                 "InsightFace is unavailable. Install the project dependencies first."
             ) from exc
 
+        # On Windows, register pip-installed nvidia CUDA and cuDNN DLL directories
+        try:
+            import site
+            candidates = []
+            for sp in site.getsitepackages():
+                candidates.extend([
+                    os.path.join(sp, "nvidia", "cu13", "bin", "x86_64"),
+                    os.path.join(sp, "nvidia", "cu13", "bin"),
+                    os.path.join(sp, "nvidia", "cudnn", "bin"),
+                ])
+            for p in candidates:
+                if os.path.isdir(p):
+                    if hasattr(os, "add_dll_directory"):
+                        try:
+                            os.add_dll_directory(p)
+                        except OSError:
+                            pass
+                    os.environ["PATH"] = p + os.pathsep + os.environ.get("PATH", "")
+        except Exception:
+            pass
+
         if hasattr(ort, "preload_dlls"):
             ort.preload_dlls(directory="")
         available_providers = ort.get_available_providers()

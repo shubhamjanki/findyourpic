@@ -164,6 +164,10 @@ export default function App() {
   const [selected, setSelected] = useState(() => new Set());
   const [downloadBusy, setDownloadBusy] = useState(false);
   const [indexBusy, setIndexBusy] = useState(false);
+  const [thumbBusy, setThumbBusy] = useState(false);
+  const [thumbProgress, setThumbProgress] = useState(null);
+  const [thumbMessage, setThumbMessage] = useState(null);
+  const [trainScreen, setTrainScreen] = useState(false);
   const [viewerPhotos, setViewerPhotos] = useState([]);
   const [viewerIndex, setViewerIndex] = useState(0);
   const [feedback, setFeedback] = useState({});
@@ -690,6 +694,92 @@ export default function App() {
     }
   };
 
+  const generateThumbnails = async () => {
+    if (thumbBusy) return;
+    setThumbBusy(true);
+    setThumbMessage(null);
+    setThumbProgress({ completed: 0, total: 0, ok: 0, errors: 0, startedAt: Date.now() });
+    try {
+      const { job_id: jobId } = await requestJson("/api/thumbnails/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      let result;
+      while (!result) {
+        const status = await requestJson(`/api/thumbnails/status/${encodeURIComponent(jobId)}`);
+        setThumbProgress((prev) => ({
+          ...prev,
+          completed: status.completed,
+          total: status.total,
+          ok: status.ok,
+          errors: status.errors,
+        }));
+        if (status.status === "failed") throw new Error(status.error || "Thumbnail generation failed.");
+        if (status.status === "completed") result = status;
+        else await new Promise((resolve) => window.setTimeout(resolve, 750));
+      }
+      setThumbMessage({
+        text: `Done! ${result.ok} thumbnails generated, ${result.errors} errors.`,
+        kind: result.errors ? "error" : "success",
+      });
+    } catch (error) {
+      setThumbMessage({ text: error.message, kind: "error" });
+    } finally {
+      setThumbBusy(false);
+      setThumbProgress(null);
+    }
+  };
+
+  useEffect(() => {
+    if (screen !== "train") return;
+    let cancelled = false;
+
+    requestJson("/api/thumbnails/status").then((status) => {
+      if (cancelled || !status || status.status !== "running") return;
+      setThumbBusy(true);
+      setThumbProgress({
+        completed: status.completed || 0,
+        total: status.total || 0,
+        ok: status.ok || 0,
+        errors: status.errors || 0,
+        startedAt: Date.now(),
+      });
+      const poll = async () => {
+        try {
+          while (!cancelled) {
+            const current = await requestJson(`/api/thumbnails/status/${encodeURIComponent(status.job_id)}`);
+            if (cancelled) break;
+            setThumbProgress((prev) => ({
+              ...prev,
+              completed: current.completed,
+              total: current.total,
+              ok: current.ok,
+              errors: current.errors,
+            }));
+            if (current.status === "failed") throw new Error(current.error || "Thumbnail generation failed.");
+            if (current.status === "completed") {
+              setThumbMessage({
+                text: `Done! ${current.ok} thumbnails generated, ${current.errors} errors.`,
+                kind: current.errors ? "error" : "success",
+              });
+              break;
+            }
+            await new Promise((r) => window.setTimeout(r, 750));
+          }
+        } catch (err) {
+          if (!cancelled) setThumbMessage({ text: err.message, kind: "error" });
+        } finally {
+          if (!cancelled) {
+            setThumbBusy(false);
+            setThumbProgress(null);
+          }
+        }
+      };
+      poll();
+    }).catch(() => {});
+  }, [screen]);
+
   const currentPhoto = viewerPhotos[viewerIndex];
   const previousPhoto = viewerPhotos[(viewerIndex - 1 + viewerPhotos.length) % viewerPhotos.length];
   const nextPhoto = viewerPhotos[(viewerIndex + 1) % viewerPhotos.length];
@@ -1193,7 +1283,7 @@ export default function App() {
             }}
           >
             <button className="stack-card stack-left" type="button" aria-label="Previous photo" disabled={!hasNeighbors} onClick={() => stepViewer(-1)}>
-              {previousPhoto ? <LazyImage src={imageUrl(previousPhoto.path, previousPhoto.source)} alt="" /> : null}
+              {previousPhoto ? <LazyImage src={imageUrl(previousPhoto.path, previousPhoto.source, true)} alt="" /> : null}
             </button>
             <button className="viewer-arrow viewer-arrow-left" type="button" aria-label="Previous photo" disabled={!hasNeighbors} onClick={() => stepViewer(-1)}><i className="ph ph-caret-left" aria-hidden="true"></i></button>
             <div
@@ -1224,7 +1314,7 @@ export default function App() {
             </div>
             <button className="viewer-arrow viewer-arrow-right" type="button" aria-label="Next photo" disabled={!hasNeighbors} onClick={() => stepViewer(1)}><i className="ph ph-caret-right" aria-hidden="true"></i></button>
             <button className="stack-card stack-right" type="button" aria-label="Next photo" disabled={!hasNeighbors} onClick={() => stepViewer(1)}>
-              {nextPhoto ? <LazyImage src={imageUrl(nextPhoto.path, nextPhoto.source)} alt="" /> : null}
+              {nextPhoto ? <LazyImage src={imageUrl(nextPhoto.path, nextPhoto.source, true)} alt="" /> : null}
             </button>
           </div>
           <div className="viewer-caption">
@@ -1261,11 +1351,83 @@ export default function App() {
           )}
           <div className="viewer-hint">Swipe or use the arrows to browse</div>
         </section>
+        {/* Train screen */}
+        <section className={`screen content-screen${screen === "train" ? "" : " hidden"}`}>
+          <div className="screen-heading">
+            <button className="back-link" type="button" onClick={() => goScreen("home")}><i className="ph ph-arrow-left" aria-hidden="true" /> Home</button>
+            <div className="heading-title">
+              <div className="eyebrow">Background jobs</div>
+              <h1>Train</h1>
+              <p>Run face indexing and thumbnail generation from the browser.</p>
+            </div>
+          </div>
+          <div className="train-card">
+            <div className="train-card-header">
+              <i className="ph ph-brain" aria-hidden="true" style={{ fontSize: "1.5rem", color: "var(--accent)" }} />
+              <div>
+                <strong>Index Faces</strong>
+                <p>Scan all S3 photos, detect faces and store embeddings in the database.</p>
+              </div>
+            </div>
+            <div className="index-tools" style={{ marginTop: "0.75rem" }}>
+              <details>
+                <summary><i className="ph ph-gear-six" aria-hidden="true" /> Settings</summary>
+                <div className="index-settings-popover">
+                  <div className="settings-inline">
+                    <label>Backend
+                      <select value={backend} onChange={(e) => setBackend(e.target.value)}>
+                        <option value="insightface">InsightFace</option>
+                        <option value="dlib">dlib</option>
+                      </select>
+                    </label>
+                    <label>Workers
+                      <select value={workers} onChange={(e) => setWorkers(e.target.value)}>
+                        <option>1</option><option>2</option><option>4</option>
+                      </select>
+                    </label>
+                  </div>
+                </div>
+              </details>
+              <button className="button button-green" type="button" disabled={indexBusy || thumbBusy} onClick={updateIndex}>
+                {indexBusy ? <><span className="spinner" /> Indexing...</> : <><i className="ph ph-arrows-clockwise" aria-hidden="true" /> Start indexing</>}
+              </button>
+            </div>
+            {indexBusy && indexProgress ? <IndexProgress progress={indexProgress} /> : null}
+            <Notice message={indexMessage?.text} kind={indexMessage?.kind} />
+          </div>
+          <div className="train-card">
+            <div className="train-card-header">
+              <i className="ph ph-images" aria-hidden="true" style={{ fontSize: "1.5rem", color: "var(--accent)" }} />
+              <div>
+                <strong>Generate Thumbnails</strong>
+                <p>Pre-generate WebP thumbnails for all S3 photos. Already-generated ones are skipped.</p>
+              </div>
+            </div>
+            <div style={{ marginTop: "0.75rem" }}>
+              <button className="button button-green" type="button" disabled={thumbBusy || indexBusy} onClick={generateThumbnails}>
+                {thumbBusy ? <><span className="spinner" /> Generating...</> : <><i className="ph ph-image" aria-hidden="true" /> Start thumbnail generation</>}
+              </button>
+            </div>
+            {thumbBusy && thumbProgress && thumbProgress.total > 0 ? (
+              <div className="index-progress" role="status" aria-live="polite" aria-busy="true">
+                <div className="index-progress-heading">
+                  <span>Thumbnails: {thumbProgress.completed} of {thumbProgress.total} ({Math.floor((thumbProgress.completed / thumbProgress.total) * 100)}%)</span>
+                  <span>{thumbProgress.completed >= 2 && thumbProgress.completed < thumbProgress.total
+                    ? formatTimeRemaining(((Date.now() - thumbProgress.startedAt) / 1000 / thumbProgress.completed) * (thumbProgress.total - thumbProgress.completed))
+                    : "Estimating..."}</span>
+                </div>
+                <progress className="index-progress-bar" max={thumbProgress.total} value={thumbProgress.completed} aria-label="Thumbnail generation progress" />
+              </div>
+            ) : null}
+            <Notice message={thumbMessage?.text} kind={thumbMessage?.kind} />
+          </div>
+        </section>
       </main>
 
       <nav className={`bottom-nav${screen === "viewer" ? " hidden" : ""}`} aria-label="Main navigation">
         <button className={`nav-button${screen === "collection" ? " active" : ""}`} type="button" onClick={openCollection}><i className="ph ph-users-three nav-icon" aria-hidden="true"></i><span>Collection</span></button>
         <button className={`nav-button${screen === "all" && !galleryPerson ? " active" : ""}`} type="button" onClick={() => openAll()}><i className="ph ph-squares-four nav-icon" aria-hidden="true"></i><span>All</span></button>
+        <button className={`nav-button${screen === "train" ? " active" : ""}`} type="button" onClick={() => goScreen("train")}><i className="ph ph-lightning nav-icon" aria-hidden="true"></i><span>Train</span></button>
       </nav>
 
       <div className={`camera-modal${cameraOpen ? "" : " hidden"}`} role="dialog" aria-modal="true" aria-label="Take a photo">

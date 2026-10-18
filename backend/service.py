@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import sqlite3
 import threading
@@ -14,6 +15,39 @@ from typing import Any
 
 import numpy as np
 from PIL import Image, ImageOps
+
+# ---------------------------------------------------------------------------
+# Disk thumbnail cache directory
+# ---------------------------------------------------------------------------
+# Thumbnails are written here on first generation and served from disk
+# on subsequent requests — no S3 download needed for the gallery view.
+THUMB_DIR: Path = Path(__file__).parent / "thumbnails"
+FACE_THUMB_DIR: Path = Path(__file__).parent / "face_thumbnails"
+
+
+def _thumb_disk_path(key: str) -> Path:
+    """Stable WebP filename derived from the S3 key."""
+    # 1. Exact key match
+    name = hashlib.md5(key.encode()).hexdigest()
+    path = THUMB_DIR / f"{name}.webp"
+    if path.exists():
+        return path
+
+    # 2. Key with "images/" prefix if not already present (e.g. from SQLite index)
+    clean_key = key.lstrip("/")
+    if not clean_key.startswith("images/"):
+        alt_name = hashlib.md5(f"images/{clean_key}".encode()).hexdigest()
+        alt_path = THUMB_DIR / f"{alt_name}.webp"
+        if alt_path.exists():
+            return alt_path
+
+    # 3. Base filename match
+    base_name = hashlib.md5(Path(key).name.encode()).hexdigest()
+    base_path = THUMB_DIR / f"{base_name}.webp"
+    if base_path.exists():
+        return base_path
+
+    return path
 
 try:
     from backend.settings import Settings
@@ -56,22 +90,16 @@ def _cache_face(key: tuple, data: bytes) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# Photo thumbnail cache
+# Photo thumbnail cache  (memory hot-cache + disk persistence)
 # ---------------------------------------------------------------------------
 _thumb_cache_lock = threading.Lock()
 _thumb_cache: OrderedDict[str, bytes] = OrderedDict()
 _THUMB_CACHE_MAX = 256
 
 
-def thumbnail_from_bytes(key: str, image_bytes: bytes, max_dim: int = 500) -> bytes:
-    with _thumb_cache_lock:
-        cached = _thumb_cache.get(key)
-        if cached is not None:
-            _thumb_cache.move_to_end(key)
-            return cached
-
+def _encode_thumbnail(image_bytes: bytes, max_dim: int) -> bytes:
+    """Resize + encode image bytes to WebP thumbnail bytes."""
     from io import BytesIO
-    from PIL import Image, ImageOps
 
     with Image.open(BytesIO(image_bytes)) as source:
         if getattr(source, "format", None) == "JPEG":
@@ -80,15 +108,57 @@ def thumbnail_from_bytes(key: str, image_bytes: bytes, max_dim: int = 500) -> by
         if max(image.size) > max_dim:
             image.thumbnail((max_dim, max_dim), Image.Resampling.BILINEAR)
         output = BytesIO()
-        image.save(output, format="JPEG", quality=82, optimize=True)
-        data = output.getvalue()
+        image.save(output, format="WEBP", quality=80, method=6)
+        return output.getvalue()
 
+
+def _mem_cache_thumb(key: str, data: bytes) -> bytes:
     with _thumb_cache_lock:
         _thumb_cache[key] = data
         _thumb_cache.move_to_end(key)
         while len(_thumb_cache) > _THUMB_CACHE_MAX:
             _thumb_cache.popitem(last=False)
     return data
+
+
+def thumbnail_from_bytes(key: str, image_bytes: bytes, max_dim: int = 500) -> bytes:
+    """Legacy helper — generates thumbnail from raw bytes (no disk cache)."""
+    with _thumb_cache_lock:
+        cached = _thumb_cache.get(key)
+        if cached is not None:
+            _thumb_cache.move_to_end(key)
+            return cached
+    data = _encode_thumbnail(image_bytes, max_dim)
+    return _mem_cache_thumb(key, data)
+
+
+def get_or_create_thumbnail(key: str, storage: Any, max_dim: int = 500) -> bytes:
+    """Return thumbnail bytes for *key*.
+
+    Resolution order:
+    1. In-memory hot-cache  (fastest)
+    2. Disk cache at THUMB_DIR/<md5>.webp  (fast, survives restarts)
+    3. Download original from S3, encode, persist to disk  (first time only)
+    """
+    # 1. Memory cache
+    with _thumb_cache_lock:
+        cached = _thumb_cache.get(key)
+        if cached is not None:
+            _thumb_cache.move_to_end(key)
+            return cached
+
+    # 2. Disk cache
+    disk_path = _thumb_disk_path(key)
+    if disk_path.exists():
+        data = disk_path.read_bytes()
+        return _mem_cache_thumb(key, data)
+
+    # 3. Generate: download from S3, encode, save to disk
+    image_bytes = storage.read_image(key)
+    data = _encode_thumbnail(image_bytes, max_dim)
+    THUMB_DIR.mkdir(parents=True, exist_ok=True)
+    disk_path.write_bytes(data)
+    return _mem_cache_thumb(key, data)
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +243,7 @@ def crop_face_jpeg(image_path: Path, box: tuple[int, int, int, int]) -> bytes:
         ))
         crop.thumbnail((320, 320))
         output = BytesIO()
-        crop.save(output, format="JPEG", quality=88)
+        crop.save(output, format="WEBP", quality=80, method=6)
         data = output.getvalue()
 
     return _cache_face(cache_key, data)
@@ -203,10 +273,35 @@ def crop_face_from_bytes(image_bytes: bytes, box: tuple[int, int, int, int]) -> 
         crop = image.crop((left, top, right, bottom))
         crop.thumbnail((320, 320))
         output = BytesIO()
-        crop.save(output, format="JPEG", quality=88)
+        crop.save(output, format="WEBP", quality=80, method=6)
         data = output.getvalue()
 
     return _cache_face(cache_key, data)
+
+
+def get_or_create_face_thumbnail(path: str, box: tuple[int, int, int, int], storage: Any) -> bytes:
+    """Return cropped face thumbnail bytes for path and bounding box with disk caching."""
+    face_key = f"{Path(path).name}:{box[0]}_{box[1]}_{box[2]}_{box[3]}"
+    with _face_cache_lock:
+        cached = _face_cache.get(face_key)
+        if cached is not None:
+            _face_cache.move_to_end(face_key)
+            return cached
+
+    face_hash = hashlib.md5(face_key.encode()).hexdigest()
+    disk_path = FACE_THUMB_DIR / f"{face_hash}.webp"
+    if disk_path.exists():
+        data = disk_path.read_bytes()
+        return _cache_face(face_key, data)
+
+    image_bytes = storage.read_image(path)
+    data = crop_face_from_bytes(image_bytes, box)
+    FACE_THUMB_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        disk_path.write_bytes(data)
+    except OSError:
+        pass
+    return _cache_face(face_key, data)
 
 
 
@@ -243,7 +338,7 @@ def index_s3(
     logger = logging.getLogger("face_search.s3_index")
     logger.info("Starting S3 indexing with backend=%s max_dim=%d", backend_name, max_dimension)
 
-    database = database.expanduser().resolve()
+    database = Path(database).expanduser().resolve()
     database.parent.mkdir(parents=True, exist_ok=True)
 
     # List all S3 keys

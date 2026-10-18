@@ -178,11 +178,12 @@ class S3Storage:
         return results
 
     def read_image(self, key: str) -> bytes:
-        if (
-            not key
-            or Path(key).suffix.lower() not in SUPPORTED_EXTENSIONS
-            or (self.prefix and not key.startswith(self.prefix))
-        ):
+        if not key or Path(key).suffix.lower() not in SUPPORTED_EXTENSIONS:
+            raise ValueError("The requested S3 key is not a supported image.")
+        if self.prefix and not key.startswith(self.prefix):
+            clean = key.lstrip("/")
+            key = f"{self.prefix.rstrip('/')}/{clean}"
+        if self.prefix and not key.startswith(self.prefix):
             raise ValueError("The requested S3 key is not a supported image in the configured prefix.")
         try:
             response = self.client.get_object(Bucket=self.bucket, Key=key)

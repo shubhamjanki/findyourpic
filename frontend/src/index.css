@@ -1566,3 +1566,41 @@ body:has(#screen-viewer:not(.hidden)) .bottom-nav {
     display: none;
   }
 }
+
+/* ---------- Train screen ---------- */
+
+.train-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 1.25rem 1.25rem 1rem;
+  margin: 0 0 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.train-card-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.875rem;
+  margin-bottom: 0.5rem;
+}
+
+.train-card-header > i {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.train-card-header strong {
+  display: block;
+  font-size: 1rem;
+  margin-bottom: 0.2rem;
+}
+
+.train-card-header p {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+  line-height: 1.4;
+}
