@@ -23,31 +23,37 @@ from PIL import Image, ImageOps
 # on subsequent requests — no S3 download needed for the gallery view.
 THUMB_DIR: Path = Path(__file__).parent / "thumbnails"
 FACE_THUMB_DIR: Path = Path(__file__).parent / "face_thumbnails"
+ALT_THUMB_DIR: Path = Path("/app/thumbnails")
+ALT_FACE_THUMB_DIR: Path = Path("/app/face_thumbnails")
 
 
 def _thumb_disk_path(key: str) -> Path:
     """Stable WebP filename derived from the S3 key."""
+    candidates = []
+
     # 1. Exact key match
     name = hashlib.md5(key.encode()).hexdigest()
-    path = THUMB_DIR / f"{name}.webp"
-    if path.exists():
-        return path
+    candidates.append(f"{name}.webp")
 
     # 2. Key with "images/" prefix if not already present (e.g. from SQLite index)
     clean_key = key.lstrip("/")
     if not clean_key.startswith("images/"):
         alt_name = hashlib.md5(f"images/{clean_key}".encode()).hexdigest()
-        alt_path = THUMB_DIR / f"{alt_name}.webp"
-        if alt_path.exists():
-            return alt_path
+        candidates.append(f"{alt_name}.webp")
 
     # 3. Base filename match
     base_name = hashlib.md5(Path(key).name.encode()).hexdigest()
-    base_path = THUMB_DIR / f"{base_name}.webp"
-    if base_path.exists():
-        return base_path
+    candidates.append(f"{base_name}.webp")
 
-    return path
+    for filename in candidates:
+        p1 = THUMB_DIR / filename
+        if p1.exists():
+            return p1
+        p2 = ALT_THUMB_DIR / filename
+        if p2.exists():
+            return p2
+
+    return THUMB_DIR / candidates[0]
 
 try:
     from backend.settings import Settings
@@ -292,6 +298,10 @@ def get_or_create_face_thumbnail(path: str, box: tuple[int, int, int, int], stor
     disk_path = FACE_THUMB_DIR / f"{face_hash}.webp"
     if disk_path.exists():
         data = disk_path.read_bytes()
+        return _cache_face(face_key, data)
+    alt_disk_path = ALT_FACE_THUMB_DIR / f"{face_hash}.webp"
+    if alt_disk_path.exists():
+        data = alt_disk_path.read_bytes()
         return _cache_face(face_key, data)
 
     image_bytes = storage.read_image(path)

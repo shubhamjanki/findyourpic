@@ -37,9 +37,6 @@ htmlcov/
 *.sqlite3-wal
 *.db
 
-# Generated thumbnail disk cache
-backend/thumbnails/
-backend/face_thumbnails/
 *.sqlite3-journal
 scratch/
 
